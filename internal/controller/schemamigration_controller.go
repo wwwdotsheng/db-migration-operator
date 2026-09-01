@@ -60,8 +60,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	// 版本组件在进程启动时注册一次（见 internal/version/manager.go 的 init），
-	// 这里只获取使用，绝不 Register（重复注册会 panic）
+	// 按 migration.Spec.Driver 获取版本组件（注册已由 internal/version 的 init 完成）
 
 	//mysqlAdapter, err := adapter.NewMysqlAdapter(migration.Spec.DatabaseRef)
 	//
