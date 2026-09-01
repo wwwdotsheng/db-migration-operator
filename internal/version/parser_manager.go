@@ -17,3 +17,11 @@ func (pm *ParserManager) Register(driver string, p Parser) error {
 	pm.m[driver] = p
 	return nil
 }
+
+func (pm *ParserManager) Get(driver string) (Parser, error) {
+	p, ok := pm.m[driver]
+	if !ok {
+		return nil, fmt.Errorf("driver %s parser not registered", driver)
+	}
+	return p, nil
+}

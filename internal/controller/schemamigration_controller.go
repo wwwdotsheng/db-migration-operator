@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/wwwdotsheng/db-migration-operator/internal/version"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -61,24 +60,8 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		return ctrl.Result{}, err
 	}
 
-	versionCheckerManager := version.NewCheckerManager()
-	versionParserManager := version.NewParserManager()
-	{
-		var errGroup []error
-
-		err := versionCheckerManager.Register("mysql", version.NewMysqlChecker())
-		if err != nil {
-			errGroup = append(errGroup, err)
-		}
-
-		err = versionParserManager.Register("mysql", version.NewMysqlParser())
-		if err != nil {
-			errGroup = append(errGroup, err)
-		}
-		if len(errGroup) > 0 {
-			panic(errGroup)
-		}
-	}
+	// 版本组件在进程启动时注册一次（见 internal/version/manager.go 的 init），
+	// 这里只获取使用，绝不 Register（重复注册会 panic）
 
 	//mysqlAdapter, err := adapter.NewMysqlAdapter(migration.Spec.DatabaseRef)
 	//

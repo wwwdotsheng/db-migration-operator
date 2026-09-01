@@ -17,3 +17,11 @@ func (cm *CheckerManager) Register(driver string, check Checker) error {
 	cm.m[driver] = check
 	return nil
 }
+
+func (cm *CheckerManager) Get(driver string) (Checker, error) {
+	c, ok := cm.m[driver]
+	if !ok {
+		return nil, fmt.Errorf("driver %s checker not registered", driver)
+	}
+	return c, nil
+}
