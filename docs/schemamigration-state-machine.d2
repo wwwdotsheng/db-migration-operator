@@ -1,0 +1,27 @@
+vars: {
+  d2-config: {
+    theme-id: 0
+    layout-engine: dagre
+  }
+}
+
+direction: right
+
+Unknown: "Unknown\n(空, 新建CR)"
+Applying: "Applying"
+Done: "Done ✅"
+Failed: "Failed ❌"
+
+Unknown -> Applying: "设置 RunNO + 状态\n(更新失败 -> return err)"
+
+Applying -> Applying: "连接数据库失败(瞬态)\nreturn err 退避重试\n状态保持不变"
+
+Applying -> Done: "ApplySql 成功\nUPDATE 记录 status='done'"
+
+Applying -> Failed: "ApplySql 失败(永久)\n先执行 RollbackSql\n再置 Failed"
+
+Applying -> Done: "幂等命中: run_no 已 done\n跳过执行, 补状态 Done"
+
+Done -> Done: "终态: 直接 return\n不再执行"
+
+Failed -> Failed: "终态: 直接 return\n不再执行"

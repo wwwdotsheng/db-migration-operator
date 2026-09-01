@@ -1,0 +1,16 @@
+stateDiagram-v2
+    direction LR
+    [*] --> Applying
+    state "应用流程" as apply {
+        Applying --> Done : ApplySql 成功
+        Applying --> Failed : ApplySql 失败(先补偿回滚)
+    }
+    state "回滚背景" as rollback {
+        Done --> Rolling : 发起回滚
+        Rolling --> RolledBack : 回滚成功
+        Rolling --> RollbackFailed : 回滚失败(人工介入)
+    }
+    Failed --> [*]
+    Done --> [*]
+    RolledBack --> [*]
+    RollbackFailed --> [*]
