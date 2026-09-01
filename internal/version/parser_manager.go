@@ -2,26 +2,28 @@ package version
 
 import "fmt"
 
+type ParserFactory func(dsn string) Parser
+
 type ParserManager struct {
-	m map[string]Parser
+	factories map[string]ParserFactory
 }
 
 func NewParserManager() *ParserManager {
-	return &ParserManager{m: map[string]Parser{}}
+	return &ParserManager{factories: map[string]ParserFactory{}}
 }
 
-func (pm *ParserManager) Register(driver string, p Parser) error {
-	if _, ok := pm.m[driver]; ok {
+func (pm *ParserManager) Register(driver string, factory ParserFactory) error {
+	if _, ok := pm.factories[driver]; ok {
 		return fmt.Errorf("driver %s already registered", driver)
 	}
-	pm.m[driver] = p
+	pm.factories[driver] = factory
 	return nil
 }
 
-func (pm *ParserManager) Get(driver string) (Parser, error) {
-	p, ok := pm.m[driver]
+func (pm *ParserManager) New(driver, dsn string) (Parser, error) {
+	factory, ok := pm.factories[driver]
 	if !ok {
 		return nil, fmt.Errorf("driver %s parser not registered", driver)
 	}
-	return p, nil
+	return factory(dsn), nil
 }
