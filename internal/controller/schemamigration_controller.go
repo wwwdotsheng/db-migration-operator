@@ -166,22 +166,8 @@ func (r *SchemaMigrationReconciler) setFailed(ctx context.Context, migration *db
 func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migration *dbv1.SchemaMigration, dsn string) (ctrl.Result, error) {
 	logger := logf.FromContext(ctx)
 
-	// 1. 设置 Applying（已是 Applying 则跳过，避免重复更新）
-	if migration.Status.Phase != dbv1.SchemaMigrationStatusPhaseApplying {
-		migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseApplying
-		migration.Status.Message = "迁移执行中"
-		if err := r.Status().Update(ctx, migration); err != nil {
-			return ctrl.Result{}, err
-		}
-		// Update 成功后本地对象 resourceVersion 可能未写回，
-		// 重新 Get 避免后续 Update（Blocked/Done/Failed）冲突
-		if err := r.Get(ctx, types.NamespacedName{Namespace: migration.Namespace, Name: migration.Name}, migration); err != nil {
-			return ctrl.Result{}, err
-		}
-	}
 
-
-	// 2. 连接 + Init（建 schema_migrations 表）
+	// 1. 连接 + Init（建 schema_migrations 表）
 	persistent, err := adapter.NewMysqlAdapter(dsn)
 	if err != nil {
 		return r.setFailed(ctx, migration, err)
@@ -221,13 +207,16 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migratio
 		}
 	}
 
-	// 3.1 版本链校验（beforeVersion 必须已成功应用，否则 Blocked 等版本链补上）
+	// 3. 版本链校验（beforeVersion 必须已成功应用，否则 Blocked 等版本链补上）
 	if migration.Spec.BeforeVersion != nil {
 		prevStatus, prevFound, err := persistent.GetMigrationStatus(ctx, *migration.Spec.BeforeVersion)
 		if err != nil {
 			return r.setFailed(ctx, migration, err)
 		}
 		if !prevFound || prevStatus != dbv1.SchemaMigrationStatusPhaseDone {
+			logger.Info("Migration blocked, version chain broken",
+				"version", migration.Spec.Version,
+				"beforeVersion", *migration.Spec.BeforeVersion)
 			migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseBlocked
 			migration.Status.Message = fmt.Sprintf("版本链断开：beforeVersion=%d 未成功应用", *migration.Spec.BeforeVersion)
 			if err := r.Status().Update(ctx, migration); err != nil {
@@ -237,7 +226,19 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migratio
 		}
 	}
 
-	// 4. 逐条执行 ApplySql
+	// 4. 设置 Applying（Blocked 通过校验后进入执行态；更新后重新 Get 避免后续冲突）
+	if migration.Status.Phase != dbv1.SchemaMigrationStatusPhaseApplying {
+		migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseApplying
+		migration.Status.Message = "迁移执行中"
+		if err := r.Status().Update(ctx, migration); err != nil {
+			return ctrl.Result{}, err
+		}
+		if err := r.Get(ctx, types.NamespacedName{Namespace: migration.Namespace, Name: migration.Name}, migration); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+	// 5. 逐条执行 ApplySql
 	for i, stmt := range migration.Spec.ApplySql {
 		if err := persistent.ExecSql(ctx, stmt); err != nil {
 			logger.Error(err, "Failed to execute ApplySql",
