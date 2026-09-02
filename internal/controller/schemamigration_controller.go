@@ -99,14 +99,14 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			dbv1.SchemaMigrationStatusPhaseApplying:
 			dsn, err := r.prepareDatabase(ctx, req, &migration)
 			if err != nil {
-				return r.setFailed(&migration, err)
+				return r.setFailed(ctx, &migration, err)
 			}
 			return r.applyMigration(ctx, &migration, dsn)
 		case dbv1.SchemaMigrationStatusPhaseDone,
 			dbv1.SchemaMigrationStatusPhaseFailed:
 			return ctrl.Result{}, nil
 		case dbv1.SchemaMigrationStatusPhaseRolledBack:
-			return r.setFailed(&migration, fmt.Errorf("版本已回滚，如需重新应用请创建新版本"))
+			return r.setFailed(ctx, &migration, fmt.Errorf("版本已回滚，如需重新应用请创建新版本"))
 		default:
 			return ctrl.Result{}, fmt.Errorf("非法状态: %s", migration.Status.Phase)
 		}
@@ -117,7 +117,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			dbv1.SchemaMigrationStatusPhaseRolling:
 			dsn, err := r.prepareDatabase(ctx, req, &migration)
 			if err != nil {
-				return r.setFailed(&migration, err)
+				return r.setFailed(ctx, &migration, err)
 			}
 			return r.rollbackMigration(ctx, &migration, dsn)
 		case dbv1.SchemaMigrationStatusPhaseRolledBack,
@@ -125,7 +125,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{}, nil
 		case dbv1.SchemaMigrationStatusPhaseApplying,
 			dbv1.SchemaMigrationStatusPhaseFailed:
-			return r.setFailed(&migration, fmt.Errorf("版本未成功应用，无需回滚"))
+			return r.setFailed(ctx, &migration, fmt.Errorf("版本未成功应用，无需回滚"))
 		default:
 			return ctrl.Result{}, fmt.Errorf("非法状态: %s", migration.Status.Phase)
 		}
@@ -134,10 +134,19 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *SchemaMigrationReconciler) setFailed(migration *dbv1.SchemaMigration, err error) (ctrl.Result, error) {
+func (r *SchemaMigrationReconciler) setFailed(ctx context.Context, migration *dbv1.SchemaMigration, err error) (ctrl.Result, error) {
+	logger := logf.FromContext(ctx)
+	logger.Error(err, "Migration failed",
+		"version", migration.Spec.Version,
+		"operation", migration.Spec.Operation,
+		"phase", migration.Status.Phase)
+
 	migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseFailed
 	migration.Status.Message = err.Error()
-	if uerr := r.Status().Update(context.Background(), migration); uerr != nil {
+	uctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if uerr := r.Status().Update(uctx, migration); uerr != nil {
+		logger.Error(uerr, "Failed to update failed status")
 		return ctrl.Result{}, uerr
 	}
 	return ctrl.Result{}, err
@@ -159,17 +168,17 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migratio
 	// 2. 连接 + Init（建 schema_migrations 表）
 	persistent, err := adapter.NewMysqlAdapter(dsn)
 	if err != nil {
-		return r.setFailed(migration, err)
+		return r.setFailed(ctx, migration, err)
 	}
 	defer persistent.Close(ctx)
 	if err := persistent.Init(ctx); err != nil {
-		return r.setFailed(migration, err)
+		return r.setFailed(ctx, migration, err)
 	}
 
 	// 3. 幂等检查（账本状态驱动）
 	status, found, err := persistent.GetMigrationStatus(ctx, migration.Spec.Version)
 	if err != nil {
-		return r.setFailed(migration, err)
+		return r.setFailed(ctx, migration, err)
 	}
 	switch {
 	case found && status == dbv1.SchemaMigrationStatusPhaseDone:
@@ -181,46 +190,50 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migratio
 		}
 		return ctrl.Result{}, nil
 	case found && status == dbv1.SchemaMigrationStatusPhaseRolledBack:
-		return r.setFailed(migration, fmt.Errorf("版本 %d 已回滚，如需重新应用请创建新版本", migration.Spec.Version))
+		return r.setFailed(ctx, migration, fmt.Errorf("版本 %d 已回滚，如需重新应用请创建新版本", migration.Spec.Version))
 	case found && status == dbv1.SchemaMigrationStatusPhaseFailed:
 		// 上次失败：重置为 Applying 续跑
 		if err := persistent.UpdateVersion(ctx, migration.Spec.Version,
 			dbv1.SchemaMigrationStatusPhaseFailed, dbv1.SchemaMigrationStatusPhaseApplying); err != nil {
-			return r.setFailed(migration, err)
+			return r.setFailed(ctx, migration, err)
 		}
 	case !found:
 		// 新迁移：插入一条 applying 记录
 		if err := persistent.InsertNewVersion(ctx, migration.Name, migration.Spec.Version,
 			dbv1.SchemaMigrationStatusPhaseApplying); err != nil {
-			return r.setFailed(migration, err)
+			return r.setFailed(ctx, migration, err)
 		}
 	}
 
 	// 4. 逐条执行 ApplySql
 	for i, stmt := range migration.Spec.ApplySql {
 		if err := persistent.ExecSql(ctx, stmt); err != nil {
+			logger.Error(err, "Failed to execute ApplySql",
+				"version", migration.Spec.Version, "index", i+1)
 			// 补偿回滚（RollbackSql 有就执行，失败不覆盖主错误）
 			var rollbackErrs []string
-			for _, rb := range migration.Spec.RollbackSql {
+			for j, rb := range migration.Spec.RollbackSql {
 				if rerr := persistent.ExecSql(ctx, rb); rerr != nil {
+					logger.Error(rerr, "Failed to execute RollbackSql",
+						"version", migration.Spec.Version, "index", j+1)
 					rollbackErrs = append(rollbackErrs, fmt.Sprintf("补偿回滚失败: %v", rerr))
 				}
 			}
 			if uerr := persistent.UpdateVersion(ctx, migration.Spec.Version,
 				dbv1.SchemaMigrationStatusPhaseApplying, dbv1.SchemaMigrationStatusPhaseFailed); uerr != nil {
-				logger.Error(uerr, "更新账本 failed 失败")
+				logger.Error(uerr, "Failed to update ledger to failed", "version", migration.Spec.Version)
 			}
 			if len(rollbackErrs) > 0 {
-				return r.setFailed(migration, fmt.Errorf("第 %d 条执行失败: %v；%s", i+1, err, rollbackErrs[0]))
+				return r.setFailed(ctx, migration, fmt.Errorf("第 %d 条执行失败: %v；%s", i+1, err, rollbackErrs[0]))
 			}
-			return r.setFailed(migration, fmt.Errorf("第 %d 条执行失败: %v", i+1, err))
+			return r.setFailed(ctx, migration, fmt.Errorf("第 %d 条执行失败: %v", i+1, err))
 		}
 	}
 
 	// 5. 成功：账本 CAS applying → done + CR 状态 Done
 	if err := persistent.UpdateVersion(ctx, migration.Spec.Version,
 		dbv1.SchemaMigrationStatusPhaseApplying, dbv1.SchemaMigrationStatusPhaseDone); err != nil {
-		return r.setFailed(migration, err)
+		return r.setFailed(ctx, migration, err)
 	}
 	migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseDone
 	migration.Status.Message = "迁移完成"
