@@ -1,8 +1,7 @@
-# /tmp/my-migration.yaml
 apiVersion: db.migration.dev/v1
 kind: SchemaMigration
 metadata:
-  name: my-migration-v2
+  name: migration-v3
 spec:
   operation: apply
   driver: mysql
@@ -15,9 +14,9 @@ spec:
     passwordSecretRef:
       name: mysql-credentials
       key: password
-  version: 2
-  beforeVersion: 1
+  version: 4
+  beforeVersion: 3
   applySql:
-    - "alter table tasdaest_data add `price` decimal(10,2) default 0"
+    - "foo bar"
   rollbackSql:
-    - "alter table test_data drop `price`"
+    - "zoo biz"

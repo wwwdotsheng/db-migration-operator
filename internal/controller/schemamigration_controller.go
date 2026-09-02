@@ -84,6 +84,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	statusEnum := []dbv1.SchemaMigrationStatusPhase{
 		dbv1.SchemaMigrationStatusPhaseUnknown,
 		dbv1.SchemaMigrationStatusPhaseApplying,
+		dbv1.SchemaMigrationStatusPhaseBlocked,
 		dbv1.SchemaMigrationStatusPhaseFailed,
 		dbv1.SchemaMigrationStatusPhaseDone,
 		dbv1.SchemaMigrationStatusPhaseRolling,
@@ -104,7 +105,8 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	case dbv1.SchemaMigrationOperationApply:
 		switch migration.Status.Phase {
 		case dbv1.SchemaMigrationStatusPhaseUnknown,
-			dbv1.SchemaMigrationStatusPhaseApplying:
+			dbv1.SchemaMigrationStatusPhaseApplying,
+			dbv1.SchemaMigrationStatusPhaseBlocked:
 			dsn, err := r.prepareDatabase(ctx, req, &migration)
 			if err != nil {
 				return r.setFailed(ctx, &migration, err)
@@ -210,6 +212,22 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migratio
 		if err := persistent.InsertNewVersion(ctx, migration.Name, migration.Spec.Version,
 			dbv1.SchemaMigrationStatusPhaseApplying); err != nil {
 			return r.setFailed(ctx, migration, err)
+		}
+	}
+
+	// 3.1 版本链校验（beforeVersion 必须已成功应用，否则 Blocked 等版本链补上）
+	if migration.Spec.BeforeVersion != nil {
+		prevStatus, prevFound, err := persistent.GetMigrationStatus(ctx, *migration.Spec.BeforeVersion)
+		if err != nil {
+			return r.setFailed(ctx, migration, err)
+		}
+		if !prevFound || prevStatus != dbv1.SchemaMigrationStatusPhaseDone {
+			migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseBlocked
+			migration.Status.Message = fmt.Sprintf("版本链断开：beforeVersion=%d 未成功应用", *migration.Spec.BeforeVersion)
+			if err := r.Status().Update(ctx, migration); err != nil {
+				return ctrl.Result{}, err
+			}
+			return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 		}
 	}
 

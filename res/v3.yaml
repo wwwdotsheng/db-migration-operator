@@ -1,0 +1,23 @@
+# /tmp/migration-v3.yaml
+apiVersion: db.migration.dev/v1
+kind: SchemaMigration
+metadata:
+  name: migration-v3
+spec:
+  operation: apply
+  driver: mysql
+  driverConfig:
+    host: mysql.example.com
+    port: 30306
+    user: root
+    database: testdb
+    tls: skip-verify
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
+  version: 3
+  beforeVersion: 2
+  applySql:
+    - "alter table test_data add `remark` varchar(100) default null"
+  rollbackSql:
+    - "alter table test_data drop `remark`"

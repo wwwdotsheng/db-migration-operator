@@ -57,6 +57,7 @@ type SchemaMigrationStatusPhase string
 
 const (
 	SchemaMigrationStatusPhaseApplying       SchemaMigrationStatusPhase = "Applying"
+	SchemaMigrationStatusPhaseBlocked        SchemaMigrationStatusPhase = "Blocked"
 	SchemaMigrationStatusPhaseFailed         SchemaMigrationStatusPhase = "Failed"
 	SchemaMigrationStatusPhaseDone           SchemaMigrationStatusPhase = "Done"
 	SchemaMigrationStatusPhaseRolling        SchemaMigrationStatusPhase = "Rolling"
