@@ -24,6 +24,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -170,6 +171,11 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migratio
 		migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseApplying
 		migration.Status.Message = "迁移执行中"
 		if err := r.Status().Update(ctx, migration); err != nil {
+			return ctrl.Result{}, err
+		}
+		// Update 成功后本地对象 resourceVersion 可能未写回，
+		// 重新 Get 避免后续 Update（Blocked/Done/Failed）冲突
+		if err := r.Get(ctx, types.NamespacedName{Namespace: migration.Namespace, Name: migration.Name}, migration); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
