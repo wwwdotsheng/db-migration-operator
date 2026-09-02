@@ -74,6 +74,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	//}
 
 	statusEnum := []dbv1.SchemaMigrationStatusPhase{
+		dbv1.SchemaMigrationStatusPhaseUnknown,
 		dbv1.SchemaMigrationStatusPhaseApplying,
 		dbv1.SchemaMigrationStatusPhaseFailed,
 		dbv1.SchemaMigrationStatusPhaseDone,
@@ -83,11 +84,12 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	}
 	if !slices.Contains(statusEnum, migration.Status.Phase) {
 		err := fmt.Errorf("unknow status %s", migration.Status.Phase)
-		logger.Error(err, err.Error())
+		logger.Error(err, "unknow status")
 		migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseUnknown
-		err = r.Status().Update(ctx, &migration)
-		logger.Error(err, err.Error())
-		return ctrl.Result{}, err
+		if uerr := r.Status().Update(ctx, &migration); uerr != nil {
+			return ctrl.Result{}, uerr
+		}
+		return ctrl.Result{}, nil
 	}
 
 	switch migration.Spec.Operation {
