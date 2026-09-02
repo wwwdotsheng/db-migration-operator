@@ -4,19 +4,18 @@ import "testing"
 
 func TestMysqlChecker(t *testing.T) {
 	c := NewMysqlChecker()
-	constraint := ">= 8.0.20 < 8.1.0 || >= 8.4.0 < 9.0.0"
 	cases := []struct {
 		version string
 		want    bool
 	}{
-		{"8.0.13", false}, // 低于支持下限
-		{"8.0.36", true},  // 8.0 LTS 区间
-		{"8.1.0", false},  // Innovation release 拒绝
-		{"8.4.0", true},   // 8.4 LTS
-		{"9.0.0", false},  // 超范围
+		{"8.0.46", true},  // 精确版本（当前部署，已验证）
+		{"8.0.45", false}, // 低一个 patch
+		{"8.0.47", false}, // 高一个 patch
+		{"8.1.0", false},  // Innovation
+		{"8.4.0", false},  // 未验证的 LTS
 	}
 	for _, tc := range cases {
-		got, err := c.Check(tc.version, constraint)
+		got, err := c.Check(tc.version, MysqlVersionRange)
 		if err != nil {
 			t.Fatalf("Check(%s) error: %v", tc.version, err)
 		}
@@ -28,18 +27,17 @@ func TestMysqlChecker(t *testing.T) {
 
 func TestPostgresChecker(t *testing.T) {
 	c := NewPostgresChecker()
-	constraint := ">= 14.0"
 	cases := []struct {
 		version string
 		want    bool
 	}{
-		{"13.6", false}, // 低于支持下限
-		{"14.0", true},  // 下限
-		{"16.4", true},  // 两位版本号（major.minor）→ 解析为 16.4.0
-		{"17.0", true},  // 未来版本（major 内）
+		{"16.4", true},  // 精确版本
+		{"16.3", false}, // 低一个 minor
+		{"16.5", false}, // 高一个 minor
+		{"14.0", false}, // 未验证的 major
 	}
 	for _, tc := range cases {
-		got, err := c.Check(tc.version, constraint)
+		got, err := c.Check(tc.version, PostgresVersionRange)
 		if err != nil {
 			t.Fatalf("Check(%s) error: %v", tc.version, err)
 		}
