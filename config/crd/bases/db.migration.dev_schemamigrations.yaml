@@ -40,19 +40,32 @@ spec:
             description: spec defines the desired state of SchemaMigration
             properties:
               applySql:
-                type: string
+                items:
+                  type: string
+                minItems: 1
+                type: array
               beforeVersion:
                 type: integer
-              databaseRef:
+              driver:
+                type: string
+              driverConfig:
+                type: object
+                x-kubernetes-preserve-unknown-fields: true
+              operation:
                 type: string
               rollbackSql:
-                type: string
+                items:
+                  type: string
+                minItems: 1
+                type: array
               version:
+                minimum: 1
                 type: integer
             required:
             - applySql
-            - databaseRef
-            - rollbackSql
+            - driver
+            - driverConfig
+            - operation
             - version
             type: object
           status:

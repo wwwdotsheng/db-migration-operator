@@ -6,8 +6,20 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: schemamigration-sample
 spec:
-  databaseRef: "root:root@tcp(mysql.example.com:30306)/testdb?timeout=5s"
+  operation: apply
+  driver: mysql
+  driverConfig:
+    host: mysql-test
+    port: 30306
+    user: root
+    database: testdb
+    tls: required
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
   version: 1
   beforeVersion: 0
-  applySql: "alter table test_data add `no` varchar(20) default null"
-  rollbackSql: "alter table test_data drop `no`"
+  applySql:
+    - "alter table test_data add `no` varchar(20) default null"
+  rollbackSql:
+    - "alter table test_data drop `no`"

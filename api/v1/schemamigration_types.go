@@ -29,15 +29,21 @@ type SchemaMigrationSpec struct {
 	// +required
 	Operation SchemaMigrationOperation `json:"operation"`
 	// +required
-	Version int `json:"version"`
-	// +optional
-	BeforeVersion int `json:"beforeVersion,omitempty"`
-	// +required
-	ApplySql []string `json:"applySql"`
-	// +required
-	RollbackSql []string `json:"rollbackSql"`
+	Driver string `json:"driver"`
+	// +kubebuilder:validation:XPreserveUnknownFields
 	// +required
 	DriverConfig runtime.RawExtension `json:"driverConfig"`
+	// +kubebuilder:validation:Minimum=1
+	// +required
+	Version int `json:"version"`
+	// +optional
+	BeforeVersion *int `json:"beforeVersion,omitempty"`
+	// +kubebuilder:validation:MinItems=1
+	// +required
+	ApplySql []string `json:"applySql"`
+	// +kubebuilder:validation:MinItems=1
+	// +optional
+	RollbackSql []string `json:"rollbackSql,omitempty"`
 }
 
 type SchemaMigrationOperation string
