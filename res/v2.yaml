@@ -1,0 +1,23 @@
+# /tmp/my-migration.yaml
+apiVersion: db.migration.dev/v1
+kind: SchemaMigration
+metadata:
+  name: my-migration-v2
+spec:
+  operation: apply
+  driver: mysql
+  driverConfig:
+    host: mysql.example.com
+    port: 30306
+    user: root
+    database: testdb
+    tls: skip-verify
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
+  version: 2
+  beforeVersion: 1
+  applySql:
+    - "alter table tasdaest_data add `price` decimal(10,2) default 0"
+  rollbackSql:
+    - "alter table test_data drop `price`"

@@ -12,12 +12,12 @@ import (
 )
 
 type MysqlConfig struct {
-	Host              string                     `json:"host"`
-	Port              int                        `json:"port"`
-	User              string                     `json:"user"`
-	Database          string                     `json:"database"`
-	TLS               string                     `json:"tls,omitempty"`
-	PasswordSecretRef corev1.SecretKeySelector   `json:"passwordSecretRef"`
+	Host              string                   `json:"host"`
+	Port              int                      `json:"port"`
+	User              string                   `json:"user"`
+	Database          string                   `json:"database"`
+	TLS               string                   `json:"tls,omitempty"`
+	PasswordSecretRef corev1.SecretKeySelector `json:"passwordSecretRef"`
 }
 
 func ParseMysqlConfig(raw []byte) (*MysqlConfig, error) {

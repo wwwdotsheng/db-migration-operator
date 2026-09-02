@@ -34,7 +34,7 @@ func (r *SchemaMigrationReconciler) prepareDatabase(ctx context.Context, req ctr
 	}
 
 	var secret corev1.Secret
-	if err := r.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: cfg.PasswordSecretRef.Name}, &secret); err != nil {
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: cfg.PasswordSecretRef.Name}, &secret); err != nil {
 		err = fmt.Errorf("read secret %s: %w", cfg.PasswordSecretRef.Name, err)
 		logger.Error(err, "Failed to read secret", "secret", cfg.PasswordSecretRef.Name)
 		return "", err

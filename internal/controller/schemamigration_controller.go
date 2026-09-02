@@ -37,7 +37,10 @@ import (
 // SchemaMigrationReconciler reconciles a SchemaMigration object
 type SchemaMigrationReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	// APIReader 直读 API server（不经缓存），用于读取 Secret 等敏感对象，
+	// 避免为 list/watch secrets 扩大 RBAC 权限。
+	APIReader client.Reader
+	Scheme    *runtime.Scheme
 }
 
 // +kubebuilder:rbac:groups=db.migration.dev,resources=schemamigrations,verbs=get;list;watch;create;update;patch;delete
@@ -72,6 +75,11 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	//	logger.Error(err, "failed to create mysql adapter")
 	//	return ctrl.Result{}, err
 	//}
+
+	// 空 Phase 是新建 CR 的初始态，归一化为 Unknown（本地赋值，避免多余更新）
+	if migration.Status.Phase == "" {
+		migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseUnknown
+	}
 
 	statusEnum := []dbv1.SchemaMigrationStatusPhase{
 		dbv1.SchemaMigrationStatusPhaseUnknown,
