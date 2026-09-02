@@ -9,8 +9,10 @@ var DefaultParserManager = NewParserManager()
 var DefaultCleanerManager = NewCleanerManager()
 
 func init() {
-	must(DefaultCheckerManager.Register("mysql", NewMysqlChecker()))
+	must(DefaultCheckerManager.Register("mysql", NewMysqlChecker(), MysqlVersionRange))
+	must(DefaultCheckerManager.Register("postgres", NewPostgresChecker(), PostgresVersionRange))
 	must(DefaultParserManager.Register("mysql", NewMysqlParser))
+	must(DefaultParserManager.Register("postgres", NewPostgresParser))
 	must(DefaultCleanerManager.Register("mysql", &MysqlCleaner{}))
 	must(DefaultCleanerManager.Register("postgres", &PostgresCleaner{}))
 }

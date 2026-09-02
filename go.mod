@@ -3,6 +3,9 @@ module github.com/wwwdotsheng/db-migration-operator
 go 1.26.0
 
 require (
+	github.com/Masterminds/semver/v3 v3.4.0
+	github.com/go-sql-driver/mysql v1.10.0
+	github.com/lib/pq v1.12.3
 	github.com/onsi/ginkgo/v2 v2.27.4
 	github.com/onsi/gomega v1.39.0
 	k8s.io/apimachinery v0.36.0
@@ -13,7 +16,6 @@ require (
 require (
 	cel.dev/expr v0.25.1 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
-	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
@@ -31,7 +33,6 @@ require (
 	github.com/go-openapi/jsonpointer v0.21.0 // indirect
 	github.com/go-openapi/jsonreference v0.20.2 // indirect
 	github.com/go-openapi/swag v0.23.0 // indirect
-	github.com/go-sql-driver/mysql v1.10.0 // indirect
 	github.com/go-task/slim-sprig/v3 v3.0.0 // indirect
 	github.com/google/cel-go v0.26.0 // indirect
 	github.com/google/gnostic-models v0.7.0 // indirect
