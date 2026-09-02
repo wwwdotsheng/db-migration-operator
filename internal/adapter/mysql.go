@@ -44,6 +44,19 @@ CREATE TABLE IF NOT EXISTS schema_migrations
 func (adapter *MysqlAdapter) GetDriverVersion() {
 }
 
+func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
+	var status string
+	err := adapter.db.QueryRowContext(ctx,
+		`SELECT status FROM schema_migrations WHERE version = ?`, version).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("get migration status error: %v", err)
+	}
+	return dbv1.SchemaMigrationStatusPhase(status), true, nil
+}
+
 func (adapter *MysqlAdapter) GetLatestVersion(ctx context.Context) (int, error) {
 	var v int
 	err := adapter.db.QueryRowContext(ctx,

@@ -20,13 +20,16 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dbv1 "github.com/wwwdotsheng/db-migration-operator/api/v1"
+	"github.com/wwwdotsheng/db-migration-operator/internal/adapter"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -139,7 +142,91 @@ func (r *SchemaMigrationReconciler) setFailed(migration *dbv1.SchemaMigration, e
 }
 
 func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, migration *dbv1.SchemaMigration, dsn string) (ctrl.Result, error) {
-	return ctrl.Result{}, fmt.Errorf("applyMigration not implemented")
+	logger := logf.FromContext(ctx)
+
+	// 1. 设置 Applying（已是 Applying 则跳过，避免重复更新）
+	if migration.Status.Phase != dbv1.SchemaMigrationStatusPhaseApplying {
+		migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseApplying
+		migration.Status.Message = "迁移执行中"
+		if err := r.Status().Update(ctx, migration); err != nil {
+			return ctrl.Result{}, err
+		}
+	}
+
+
+	// 2. 连接 + Init（建 schema_migrations 表）
+	persistent, err := adapter.NewMysqlAdapter(dsn)
+	if err != nil {
+		return r.setFailed(migration, err)
+	}
+	defer persistent.Close(ctx)
+	if err := persistent.Init(ctx); err != nil {
+		return r.setFailed(migration, err)
+	}
+
+	// 3. 幂等检查（账本状态驱动）
+	status, found, err := persistent.GetMigrationStatus(ctx, migration.Spec.Version)
+	if err != nil {
+		return r.setFailed(migration, err)
+	}
+	switch {
+	case found && status == dbv1.SchemaMigrationStatusPhaseDone:
+		// 已应用：补 Done 状态后结束
+		migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseDone
+		migration.Status.Message = "迁移已完成"
+		if err := r.Status().Update(ctx, migration); err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	case found && status == dbv1.SchemaMigrationStatusPhaseRolledBack:
+		return r.setFailed(migration, fmt.Errorf("版本 %d 已回滚，如需重新应用请创建新版本", migration.Spec.Version))
+	case found && status == dbv1.SchemaMigrationStatusPhaseFailed:
+		// 上次失败：重置为 Applying 续跑
+		if err := persistent.UpdateVersion(ctx, migration.Spec.Version,
+			dbv1.SchemaMigrationStatusPhaseFailed, dbv1.SchemaMigrationStatusPhaseApplying); err != nil {
+			return r.setFailed(migration, err)
+		}
+	case !found:
+		// 新迁移：插入一条 applying 记录
+		if err := persistent.InsertNewVersion(ctx, migration.Name, migration.Spec.Version,
+			dbv1.SchemaMigrationStatusPhaseApplying); err != nil {
+			return r.setFailed(migration, err)
+		}
+	}
+
+	// 4. 逐条执行 ApplySql
+	for i, stmt := range migration.Spec.ApplySql {
+		if err := persistent.ExecSql(ctx, stmt); err != nil {
+			// 补偿回滚（RollbackSql 有就执行，失败不覆盖主错误）
+			var rollbackErrs []string
+			for _, rb := range migration.Spec.RollbackSql {
+				if rerr := persistent.ExecSql(ctx, rb); rerr != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Sprintf("补偿回滚失败: %v", rerr))
+				}
+			}
+			if uerr := persistent.UpdateVersion(ctx, migration.Spec.Version,
+				dbv1.SchemaMigrationStatusPhaseApplying, dbv1.SchemaMigrationStatusPhaseFailed); uerr != nil {
+				logger.Error(uerr, "更新账本 failed 失败")
+			}
+			if len(rollbackErrs) > 0 {
+				return r.setFailed(migration, fmt.Errorf("第 %d 条执行失败: %v；%s", i+1, err, rollbackErrs[0]))
+			}
+			return r.setFailed(migration, fmt.Errorf("第 %d 条执行失败: %v", i+1, err))
+		}
+	}
+
+	// 5. 成功：账本 CAS applying → done + CR 状态 Done
+	if err := persistent.UpdateVersion(ctx, migration.Spec.Version,
+		dbv1.SchemaMigrationStatusPhaseApplying, dbv1.SchemaMigrationStatusPhaseDone); err != nil {
+		return r.setFailed(migration, err)
+	}
+	migration.Status.Phase = dbv1.SchemaMigrationStatusPhaseDone
+	migration.Status.Message = "迁移完成"
+	migration.Status.AppliedAt = &metav1.Time{Time: time.Now()}
+	if err := r.Status().Update(ctx, migration); err != nil {
+		return ctrl.Result{}, err
+	}
+	return ctrl.Result{}, nil
 }
 
 func (r *SchemaMigrationReconciler) rollbackMigration(ctx context.Context, migration *dbv1.SchemaMigration, dsn string) (ctrl.Result, error) {
