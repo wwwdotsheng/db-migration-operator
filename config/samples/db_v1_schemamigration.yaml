@@ -9,11 +9,11 @@ spec:
   operation: apply
   driver: mysql
   driverConfig:
-    host: mysql-test
+    host: mysql.example.com
     port: 30306
     user: root
     database: testdb
-    tls: required
+    tls: skip-verify
     passwordSecretRef:
       name: mysql-credentials
       key: password
