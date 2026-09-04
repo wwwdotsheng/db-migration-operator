@@ -66,6 +66,19 @@ const (
 	SchemaMigrationStatusPhaseUnknown        SchemaMigrationStatusPhase = "Unknown"
 )
 
+var (
+	SchemaMigrationStatusPhaseEnum = []SchemaMigrationStatusPhase{
+		SchemaMigrationStatusPhaseApplying,
+		SchemaMigrationStatusPhaseBlocked,
+		SchemaMigrationStatusPhaseFailed,
+		SchemaMigrationStatusPhaseDone,
+		SchemaMigrationStatusPhaseRolling,
+		SchemaMigrationStatusPhaseRolledBack,
+		SchemaMigrationStatusPhaseRollbackFailed,
+		SchemaMigrationStatusPhaseUnknown,
+	}
+)
+
 // SchemaMigrationStatus defines the observed state of SchemaMigration.
 type SchemaMigrationStatus struct {
 	// +optional
