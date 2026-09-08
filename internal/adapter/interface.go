@@ -11,7 +11,8 @@ type Persistent interface {
 	GetLatestVersion(ctx context.Context) (int, error)
 	GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error)
 	InsertNewVersion(ctx context.Context, name string, version int, status dbv1.SchemaMigrationStatusPhase) error
-	ExecSql(ctx context.Context, sql string) error
+	ExecSql(ctx context.Context, sql []string) (int, error)
 	UpdateVersion(ctx context.Context, version int, prevStatus, destStatus dbv1.SchemaMigrationStatusPhase) error
+	GetVersionStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error)
 	Close(ctx context.Context) error
 }

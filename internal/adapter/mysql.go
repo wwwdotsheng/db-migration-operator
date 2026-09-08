@@ -14,7 +14,6 @@ type MysqlAdapter struct {
 	db *sql.DB
 }
 
-// NewMysqlAdapter TODO 问题在于这个NewMysqlAdapter的DSN不是固定的呢？假如有多个CRD部署的话，那么这个DSN属于什么呢？每一个DSN去New一个吗？好像也可以？
 func NewMysqlAdapter(dsn string) (*MysqlAdapter, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
@@ -59,9 +58,10 @@ func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int
 
 func (adapter *MysqlAdapter) GetLatestVersion(ctx context.Context) (int, error) {
 	var v int
+	// 你看这里传入了PhaseDone，这种adapter是否要直接操作这个SchemaMigrationStatusPhase类型呢？
 	err := adapter.db.QueryRowContext(ctx,
 		`SELECT MAX(version) AS "version" FROM schema_migrations WHERE status = ?;`,
-		dbv1.SchemaMigrationStatusPhaseDone).
+		dbv1.PhaseDone).
 		Scan(&v)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
@@ -85,11 +85,15 @@ func (adapter *MysqlAdapter) InsertNewVersion(ctx context.Context, name string, 
 	return nil
 }
 
-func (adapter *MysqlAdapter) ExecSql(ctx context.Context, query string) error {
-	if _, err := adapter.db.ExecContext(ctx, query); err != nil {
-		return fmt.Errorf("exec sql error: %v", err)
+func (adapter *MysqlAdapter) ExecSql(ctx context.Context, queryArr []string) (int, error) {
+	runLines := 0
+	for _, query := range queryArr {
+		if _, err := adapter.db.ExecContext(ctx, query); err != nil {
+			return runLines, fmt.Errorf("exec sql error: %v", err)
+		}
+		runLines++
 	}
-	return nil
+	return runLines, nil
 }
 
 func (adapter *MysqlAdapter) UpdateVersion(ctx context.Context, version int, prevStatus, destStatus dbv1.SchemaMigrationStatusPhase) error {
@@ -107,6 +111,19 @@ func (adapter *MysqlAdapter) UpdateVersion(ctx context.Context, version int, pre
 		return fmt.Errorf("update version from schema_migrations table failed, no rows affected, prevStatus: %s, destStatus: %s", prevStatus, destStatus)
 	}
 	return nil
+}
+
+func (adapter *MysqlAdapter) GetVersionStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
+	var resStatus dbv1.SchemaMigrationStatusPhase
+	err := adapter.db.QueryRowContext(ctx, `SELECT status FROM schema_migrations WHERE version = ?;`).
+		Scan(&resStatus)
+	if err != nil {
+		return resStatus, false, fmt.Errorf("get version status error: %v", err)
+	}
+	if resStatus == "" {
+		return resStatus, false, fmt.Errorf("get version status failed, no rows affected, version: %d", version)
+	}
+	return resStatus, true, nil
 }
 
 func (adapter *MysqlAdapter) Close(ctx context.Context) error {

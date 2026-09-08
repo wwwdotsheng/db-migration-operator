@@ -15,34 +15,27 @@ import (
 )
 
 // prepareDatabase 完成迁移执行前的连接准备：
-// 解析 driverConfig → 读取 Secret 凭据 → 构建 DSN → 版本校验闸门。
+// 解析 driverConfig（注册表按 driver 分发）→ 读取 Secret 凭据 → 构建 DSN → 版本校验闸门。
 // 返回的 dsn 供迁移流程复用。
 func (r *SchemaMigrationReconciler) prepareDatabase(ctx context.Context, req ctrl.Request, migration *dbv1.SchemaMigration) (string, error) {
 	logger := logf.FromContext(ctx)
 
-	var cfg *adapter.MysqlConfig
-	var err error
-	switch migration.Spec.Driver {
-	case "mysql":
-		cfg, err = adapter.ParseMysqlConfig(migration.Spec.DriverConfig.Raw)
-	default:
-		err = fmt.Errorf("unsupported driver %q", migration.Spec.Driver)
-	}
+	cfg, err := adapter.DefaultConfigManager.Parse(migration.Spec.Driver, migration.Spec.DriverConfig.Raw)
 	if err != nil {
 		logger.Error(err, "Failed to parse driver config", "driver", migration.Spec.Driver)
 		return "", err
 	}
 
 	var secret corev1.Secret
-	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: cfg.PasswordSecretRef.Name}, &secret); err != nil {
-		err = fmt.Errorf("read secret %s: %w", cfg.PasswordSecretRef.Name, err)
-		logger.Error(err, "Failed to read secret", "secret", cfg.PasswordSecretRef.Name)
+	if err := r.APIReader.Get(ctx, types.NamespacedName{Namespace: req.Namespace, Name: cfg.SecretRef().Name}, &secret); err != nil {
+		err = fmt.Errorf("read secret %s: %w", cfg.SecretRef().Name, err)
+		logger.Error(err, "Failed to read secret", "secret", cfg.SecretRef().Name)
 		return "", err
 	}
-	password, ok := secret.Data[cfg.PasswordSecretRef.Key]
+	password, ok := secret.Data[cfg.SecretRef().Key]
 	if !ok {
-		err = fmt.Errorf("secret %s missing key %s", cfg.PasswordSecretRef.Name, cfg.PasswordSecretRef.Key)
-		logger.Error(err, "Secret missing key", "secret", cfg.PasswordSecretRef.Name, "key", cfg.PasswordSecretRef.Key)
+		err = fmt.Errorf("secret %s missing key %s", cfg.SecretRef().Name, cfg.SecretRef().Key)
+		logger.Error(err, "Secret missing key", "secret", cfg.SecretRef().Name, "key", cfg.SecretRef().Key)
 		return "", err
 	}
 

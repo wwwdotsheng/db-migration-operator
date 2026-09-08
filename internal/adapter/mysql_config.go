@@ -34,6 +34,10 @@ func ParseMysqlConfig(raw []byte) (*MysqlConfig, error) {
 	return &cfg, nil
 }
 
+func (c *MysqlConfig) SecretRef() corev1.SecretKeySelector {
+	return c.PasswordSecretRef
+}
+
 func (c *MysqlConfig) BuildDSN(password string) (string, error) {
 	cfg := mysql.NewConfig()
 	cfg.User = c.User

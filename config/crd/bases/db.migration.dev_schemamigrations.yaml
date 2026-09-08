@@ -46,26 +46,24 @@ spec:
                 type: array
               beforeVersion:
                 type: integer
+              changeType:
+                type: string
               driver:
                 type: string
               driverConfig:
                 type: object
                 x-kubernetes-preserve-unknown-fields: true
-              operation:
+              name:
                 type: string
-              rollbackSql:
-                items:
-                  type: string
-                minItems: 1
-                type: array
               version:
                 minimum: 1
                 type: integer
             required:
             - applySql
+            - changeType
             - driver
             - driverConfig
-            - operation
+            - name
             - version
             type: object
           status:

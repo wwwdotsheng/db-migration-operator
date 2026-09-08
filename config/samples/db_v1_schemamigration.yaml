@@ -6,7 +6,8 @@ metadata:
     app.kubernetes.io/managed-by: kustomize
   name: schemamigration-sample
 spec:
-  operation: apply
+  name: test1
+  changeType: Expand
   driver: mysql
   driverConfig:
     host: mysql.example.com
@@ -21,5 +22,3 @@ spec:
   beforeVersion: 0
   applySql:
     - "alter table test_data add `no` varchar(20) default null"
-  rollbackSql:
-    - "alter table test_data drop `no`"

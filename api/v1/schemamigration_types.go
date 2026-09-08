@@ -27,7 +27,9 @@ import (
 // SchemaMigrationSpec defines the desired state of SchemaMigration
 type SchemaMigrationSpec struct {
 	// +required
-	Operation SchemaMigrationOperation `json:"operation"`
+	Name string `json:"name"`
+	// +required
+	ChangeType SchemaMigrationChangeType `json:"changeType"`
 	// +required
 	Driver string `json:"driver"`
 	// +kubebuilder:validation:XPreserveUnknownFields
@@ -41,42 +43,24 @@ type SchemaMigrationSpec struct {
 	// +kubebuilder:validation:MinItems=1
 	// +required
 	ApplySql []string `json:"applySql"`
-	// +kubebuilder:validation:MinItems=1
-	// +optional
-	RollbackSql []string `json:"rollbackSql,omitempty"`
 }
 
-type SchemaMigrationOperation string
+type SchemaMigrationChangeType string
 
 const (
-	SchemaMigrationOperationApply    = "apply"
-	SchemaMigrationOperationRollback = "rollback"
+	ChangeTypeExpand   SchemaMigrationChangeType = "Expand"
+	ChangeTypeContract SchemaMigrationChangeType = "Contract"
+	ChangeTypeMixed    SchemaMigrationChangeType = "Mixed"
 )
 
 type SchemaMigrationStatusPhase string
 
 const (
-	SchemaMigrationStatusPhaseApplying       SchemaMigrationStatusPhase = "Applying"
-	SchemaMigrationStatusPhaseBlocked        SchemaMigrationStatusPhase = "Blocked"
-	SchemaMigrationStatusPhaseFailed         SchemaMigrationStatusPhase = "Failed"
-	SchemaMigrationStatusPhaseDone           SchemaMigrationStatusPhase = "Done"
-	SchemaMigrationStatusPhaseRolling        SchemaMigrationStatusPhase = "Rolling"
-	SchemaMigrationStatusPhaseRolledBack     SchemaMigrationStatusPhase = "RolledBack"
-	SchemaMigrationStatusPhaseRollbackFailed SchemaMigrationStatusPhase = "RollbackFailed"
-	SchemaMigrationStatusPhaseUnknown        SchemaMigrationStatusPhase = "Unknown"
-)
-
-var (
-	SchemaMigrationStatusPhaseEnum = []SchemaMigrationStatusPhase{
-		SchemaMigrationStatusPhaseApplying,
-		SchemaMigrationStatusPhaseBlocked,
-		SchemaMigrationStatusPhaseFailed,
-		SchemaMigrationStatusPhaseDone,
-		SchemaMigrationStatusPhaseRolling,
-		SchemaMigrationStatusPhaseRolledBack,
-		SchemaMigrationStatusPhaseRollbackFailed,
-		SchemaMigrationStatusPhaseUnknown,
-	}
+	PhaseApplying SchemaMigrationStatusPhase = "Applying"
+	PhaseFailed   SchemaMigrationStatusPhase = "Failed"
+	PhaseDone     SchemaMigrationStatusPhase = "Done"
+	PhaseBlocked  SchemaMigrationStatusPhase = "Blocked"
+	PhaseInit     SchemaMigrationStatusPhase = ""
 )
 
 // SchemaMigrationStatus defines the observed state of SchemaMigration.
