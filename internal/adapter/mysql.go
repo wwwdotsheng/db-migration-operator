@@ -7,7 +7,8 @@ import (
 	"fmt"
 
 	dbv1 "github.com/wwwdotsheng/db-migration-operator/api/v1"
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
+	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 type MysqlAdapter struct {
@@ -44,16 +45,16 @@ func (adapter *MysqlAdapter) GetDriverVersion() {
 }
 
 func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
-	var status string
+	var resStatus dbv1.SchemaMigrationStatusPhase
 	err := adapter.db.QueryRowContext(ctx,
-		`SELECT status FROM schema_migrations WHERE version = ?`, version).Scan(&status)
+		`SELECT status FROM schema_migrations WHERE version = ?`, version).Scan(&resStatus)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
 	if err != nil {
 		return "", false, fmt.Errorf("get migration status error: %v", err)
 	}
-	return dbv1.SchemaMigrationStatusPhase(status), true, nil
+	return resStatus, true, nil
 }
 
 func (adapter *MysqlAdapter) GetLatestVersion(ctx context.Context) (int, error) {
@@ -86,14 +87,36 @@ func (adapter *MysqlAdapter) InsertNewVersion(ctx context.Context, name string, 
 }
 
 func (adapter *MysqlAdapter) ExecSql(ctx context.Context, queryArr []string) (int, error) {
+	logger := logf.FromContext(ctx)
 	runLines := 0
-	for _, query := range queryArr {
+	for i, query := range queryArr {
 		if _, err := adapter.db.ExecContext(ctx, query); err != nil {
-			return runLines, fmt.Errorf("exec sql error: %v", err)
+			if mysqlErr, ok := errors.AsType[*mysql.MySQLError](err); ok && isIdempotentErrno(mysqlErr.Number) {
+				logger.Info("DDL skipped as idempotent",
+					"index", i+1,
+					"ddl", query,
+					"errno", mysqlErr.Number,
+					"reason", mysqlErr.Message)
+				runLines++
+				continue
+			}
+			logger.Error(err, "Exec SQL failed",
+				"index", i+1,
+				"ddl", query,
+				"appliedLines", runLines)
+			return runLines, fmt.Errorf("exec sql %d failed: %w (applied %d lines)", i+1, err, runLines)
 		}
 		runLines++
 	}
 	return runLines, nil
+}
+
+func isIdempotentErrno(errno uint16) bool {
+	switch errno {
+	case 1060, 1061, 1091:
+		return true
+	}
+	return false
 }
 
 func (adapter *MysqlAdapter) UpdateVersion(ctx context.Context, version int, prevStatus, destStatus dbv1.SchemaMigrationStatusPhase) error {
@@ -115,9 +138,12 @@ func (adapter *MysqlAdapter) UpdateVersion(ctx context.Context, version int, pre
 
 func (adapter *MysqlAdapter) GetVersionStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
 	var resStatus dbv1.SchemaMigrationStatusPhase
-	err := adapter.db.QueryRowContext(ctx, `SELECT status FROM schema_migrations WHERE version = ?;`).
+	err := adapter.db.QueryRowContext(ctx, `SELECT status FROM schema_migrations WHERE version = ?;`, version).
 		Scan(&resStatus)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", false, nil
+		}
 		return resStatus, false, fmt.Errorf("get version status error: %v", err)
 	}
 	if resStatus == "" {
