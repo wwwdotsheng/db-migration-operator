@@ -19,6 +19,5 @@ spec:
       name: mysql-credentials
       key: password
   version: 1
-  beforeVersion: 0
   applySql:
     - "alter table test_data add `no` varchar(20) default null"

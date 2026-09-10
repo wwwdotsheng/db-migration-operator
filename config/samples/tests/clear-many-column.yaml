@@ -1,0 +1,29 @@
+apiVersion: db.migration.dev/v1
+kind: SchemaMigration
+metadata:
+  labels:
+    app.kubernetes.io/name: db-migration-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: clear-many-column
+spec:
+  name: test1
+  changeType: Expand
+  driver: mysql
+  driverConfig:
+    host: mysql.example.com
+    port: 30306
+    user: root
+    database: testdb
+    tls: skip-verify
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
+  version: 9
+  beforeVersion: 8
+  applySql:
+    - "alter table test_data drop `col_v1`;"
+    - "alter table test_data drop `col_v2`;"
+    - "alter table test_data drop `col_v3`;"
+    - "alter table test_data drop `col_v4`;"
+    - "alter table test_data drop `col_v5`;"
+    - "alter table test_data drop `col_v6`;"

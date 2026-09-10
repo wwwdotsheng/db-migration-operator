@@ -56,7 +56,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	logger := logf.FromContext(ctx,
 		"name", req.Name,
 		"namespace", req.Namespace,
-		"operation", migration.Spec.ChangeType,
+		"changeType", migration.Spec.ChangeType,
 		"version", migration.Spec.Version,
 	)
 
@@ -66,7 +66,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		dbv1.ChangeTypeMixed,
 	}, migration.Spec.ChangeType) {
 		err := fmt.Errorf("未知的ChangeType类型：%q", migration.Spec.ChangeType)
-		logger.Error(err, "invalid schema migration operation, skip reconcile")
+		logger.Error(err, "invalid schema migration changeType, skip reconcile")
 		msg := err.Error()
 		if migration.Status.Message != msg {
 			migration.Status.Message = msg
