@@ -41,9 +41,6 @@ CREATE TABLE IF NOT EXISTS schema_migrations
 	return nil
 }
 
-func (adapter *MysqlAdapter) GetDriverVersion() {
-}
-
 func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
 	var resStatus dbv1.SchemaMigrationStatusPhase
 	err := adapter.db.QueryRowContext(ctx,
@@ -59,7 +56,6 @@ func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int
 
 func (adapter *MysqlAdapter) GetLatestVersion(ctx context.Context) (int, error) {
 	var v int
-	// 你看这里传入了PhaseDone，这种adapter是否要直接操作这个SchemaMigrationStatusPhase类型呢？
 	err := adapter.db.QueryRowContext(ctx,
 		`SELECT MAX(version) AS "version" FROM schema_migrations WHERE status = ?;`,
 		dbv1.PhaseDone).
@@ -131,7 +127,9 @@ func (adapter *MysqlAdapter) UpdateVersion(ctx context.Context, version int, pre
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return fmt.Errorf("update version from schema_migrations table failed, no rows affected, prevStatus: %s, destStatus: %s", prevStatus, destStatus)
+		var current dbv1.SchemaMigrationStatusPhase
+		_ = adapter.db.QueryRowContext(ctx, "SELECT status FROM schema_migrations WHERE version=?", version).Scan(&current)
+		return fmt.Errorf("%w: version=%d expected=%q current=%q", ErrVersionConflict, version, prevStatus, current)
 	}
 	return nil
 }
