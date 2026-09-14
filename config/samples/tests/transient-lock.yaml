@@ -1,0 +1,21 @@
+apiVersion: db.migration.dev/v1
+kind: SchemaMigration
+metadata:
+  name: transient-lock-12
+spec:
+  name: transient-lock
+  changeType: Expand
+  driver: mysql
+  driverConfig:
+    host: mysql.example.com
+    port: 30306
+    user: root
+    database: testdb
+    tls: skip-verify
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
+  version: 12
+  beforeVersion: 10
+  applySql:
+    - "alter table test_data add `lock_probe` varchar(20) default null"

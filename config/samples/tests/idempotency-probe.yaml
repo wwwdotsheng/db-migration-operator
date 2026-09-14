@@ -1,0 +1,23 @@
+apiVersion: db.migration.dev/v1
+kind: SchemaMigration
+metadata:
+  name: idempotency-probe-10
+spec:
+  name: idem-probe
+  changeType: Expand
+  driver: mysql
+  driverConfig:
+    host: mysql.example.com
+    port: 30306
+    user: root
+    database: testdb
+    tls: skip-verify
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
+  version: 10
+  beforeVersion: 9
+  applySql:
+    - "alter table test_data add `no` varchar(20) default null"
+    - "alter table test_data drop `nonexistent_col`;"
+    - "alter table test_data add `idem_probe` varchar(20) default null"

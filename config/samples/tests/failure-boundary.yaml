@@ -1,0 +1,22 @@
+apiVersion: db.migration.dev/v1
+kind: SchemaMigration
+metadata:
+  name: failure-boundary-11
+spec:
+  name: failure-boundary
+  changeType: Expand
+  driver: mysql
+  driverConfig:
+    host: mysql.example.com
+    port: 30306
+    user: root
+    database: testdb
+    tls: skip-verify
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
+  version: 11
+  beforeVersion: 10
+  applySql:
+    - "alter table test_data add `boundary_ok` varchar(20) default null"
+    - "alter table test_data addd `typo_col` varchar(20)"
