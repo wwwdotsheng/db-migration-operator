@@ -23,7 +23,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/wwwdotsheng/db-migration-operator/internal/adapter"
+	adapter "github.com/wwwdotsheng/db-migration-operator/internal/adapter"
+	"github.com/wwwdotsheng/db-migration-operator/internal/resolver"
+	"github.com/wwwdotsheng/db-migration-operator/internal/version"
 	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -59,6 +61,7 @@ type SchemaMigrationReconciler struct {
 	APIReader client.Reader
 	Scheme    *runtime.Scheme
 	Recorder  record.EventRecorder
+	Resolver  *resolver.SecretResolver
 }
 
 // +kubebuilder:rbac:groups=db.migration.dev,resources=schemamigrations,verbs=get;list;watch;create;update;patch;delete
@@ -112,10 +115,27 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			}
 		}
 
-		dsn, err := r.prepareDatabase(ctx, req, &migration)
+		dsn, err := r.prepareDatabase(ctx, &migration)
 		if err != nil {
-			logger.Error(err, "failed to prepare database")
-			return ctrl.Result{}, err
+			switch {
+			case errors.Is(err, adapter.ErrNotParseDriverConfig):
+				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
+					return ctrl.Result{}, perr
+				}
+				return ctrl.Result{}, nil
+			case errors.Is(err, adapter.ErrNotFoundSecret):
+				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseBlocked, err.Error()); perr != nil {
+					return ctrl.Result{}, perr
+				}
+				return ctrl.Result{RequeueAfter: 30 * time.Minute}, nil
+			case errors.Is(err, adapter.ErrUnauthorizedSecret):
+				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
+					return ctrl.Result{}, perr
+				}
+				return ctrl.Result{}, nil
+			default:
+				return ctrl.Result{}, err
+			}
 		}
 
 		persistent, err := adapter.NewMysqlAdapter(dsn)
@@ -123,19 +143,21 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{}, fmt.Errorf("failed to create mysql adapter: %w", err)
 		}
 
-		if migration.Status.Phase == dbv1.PhaseBlocked {
-			err := r.judgeBlock(ctx, persistent, *migration.Spec.BeforeVersion)
-			if err != nil {
+		if migration.Status.Phase == dbv1.PhaseBlocked && migration.Spec.BeforeVersion != nil {
+			if err := r.judgeBlock(ctx, persistent, *migration.Spec.BeforeVersion); err != nil {
 				if errors.Is(err, BeforeVersionNotSatisfied) {
 					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 				}
 				return ctrl.Result{}, err
 			}
+		}
+
+		if migration.Status.Phase == dbv1.PhaseBlocked {
 			err = r.patchStatus(ctx, &migration, dbv1.PhaseApplying, "")
 			if err != nil {
 				return ctrl.Result{}, err
 			}
-			r.Recorder.Event(&migration, corev1.EventTypeNormal, "BlockCleared", "...")
+			r.Recorder.Event(&migration, corev1.EventTypeNormal, "BlockCleared", "block is cleared")
 		}
 
 		if err := r.applyMigration(ctx, logger, persistent, &migration); err != nil {
@@ -243,7 +265,49 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, logger l
 	return nil
 }
 
+// prepareDatabase 完成迁移执行前的连接准备：
+// 解析 driverConfig（注册表按 driver 分发）→ 读取 Secret 凭据 → 构建 DSN → 版本校验闸门。
+// 返回的 dsn 供迁移流程复用。
+func (r *SchemaMigrationReconciler) prepareDatabase(ctx context.Context, migration *dbv1.SchemaMigration) (dsn string, err error) {
+	cfg, err := adapter.DefaultConfigManager.Parse(migration.Spec.Driver, migration.Spec.DriverConfig.Raw)
+	if err != nil {
+		return "", fmt.Errorf("%w: driver %q: %w", adapter.ErrNotParseDriverConfig, migration.Spec.Driver, err)
+	}
+
+	password, err := r.Resolver.ResolvePassword(ctx, migration.Namespace, cfg.SecretRef())
+	if err != nil {
+		return "", err
+	}
+
+	dsn, err = cfg.BuildDSN(password)
+	if err != nil {
+		return "", err
+	}
+
+	parser, err := version.DefaultParserManager.New(migration.Spec.Driver, dsn)
+	if err != nil {
+		return "", err
+	}
+
+	v, err := parser.GetVersion(ctx)
+	if err != nil {
+		return "", err
+	}
+
+	ok, err := version.DefaultCheckerManager.Check(migration.Spec.Driver, v)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", fmt.Errorf("database version %s does not satisfy %s constraint", v, migration.Spec.Driver)
+	}
+	return dsn, nil
+}
+
 func (r *SchemaMigrationReconciler) patchStatus(ctx context.Context, migration *dbv1.SchemaMigration, phase dbv1.SchemaMigrationStatusPhase, message string) error {
+	if migration.Status.Phase == phase && migration.Status.Message == message {
+		return nil
+	}
 	base := migration.DeepCopy()
 	migration.Status.Phase = phase
 	migration.Status.Message = message
