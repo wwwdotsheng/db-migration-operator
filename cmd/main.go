@@ -21,6 +21,7 @@ import (
 	"flag"
 	"os"
 
+	"github.com/wwwdotsheng/db-migration-operator/internal/resolver"
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -179,6 +180,7 @@ func main() {
 		APIReader: mgr.GetAPIReader(),
 		Scheme:    mgr.GetScheme(),
 		Recorder:  mgr.GetEventRecorderFor("schemamigration"),
+		Resolver:  resolver.NewSecretResolver(mgr.GetAPIReader()),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "Failed to create controller", "controller", "schemamigration")
 		os.Exit(1)
