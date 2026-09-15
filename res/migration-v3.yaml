@@ -1,14 +1,18 @@
-# /tmp/migration-v3.yaml
+# 版本链示例 · 第 1 步
+#
+# 加一列。它会先等 beforeVersion: 2 变成 Done 才开始跑。
+# 如果版本 2 还没跑，这个 CR 会停在 Blocked 轮询等待 —— 这就是「顺序靠声明」。
 apiVersion: db.migration.dev/v1
 kind: SchemaMigration
 metadata:
   name: migration-v3
 spec:
-  operation: apply
+  name: add-remark-column
+  changeType: Expand
   driver: mysql
   driverConfig:
     host: mysql.example.com
-    port: 30306
+    port: 3306
     user: root
     database: testdb
     tls: skip-verify
@@ -19,5 +23,3 @@ spec:
   beforeVersion: 2
   applySql:
     - "alter table test_data add `remark` varchar(100) default null"
-  rollbackSql:
-    - "alter table test_data drop `remark`"

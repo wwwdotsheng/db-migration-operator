@@ -1,0 +1,25 @@
+# 版本链示例 · 第 2 步
+#
+# 回填上一步加的列。必须先 apply 完 migration-v3.yaml，
+# 否则这里会因为 beforeVersion: 3 没 Done 而停在 Blocked。
+apiVersion: db.migration.dev/v1
+kind: SchemaMigration
+metadata:
+  name: migration-v4
+spec:
+  name: backfill-remark
+  changeType: Mixed
+  driver: mysql
+  driverConfig:
+    host: mysql.example.com
+    port: 3306
+    user: root
+    database: testdb
+    tls: skip-verify
+    passwordSecretRef:
+      name: mysql-credentials
+      key: password
+  version: 4
+  beforeVersion: 3
+  applySql:
+    - "update test_data set `remark` = 'n/a' where `remark` is null"
