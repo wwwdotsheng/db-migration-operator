@@ -6,8 +6,8 @@ import (
 	"errors"
 	"fmt"
 
-	dbv1 "github.com/wwwdotsheng/db-migration-operator/api/v1"
 	"github.com/go-sql-driver/mysql"
+	dbv1 "github.com/wwwdotsheng/db-migration-operator/api/v1"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 

@@ -23,10 +23,10 @@ import (
 	"slices"
 	"time"
 
+	"github.com/go-logr/logr"
 	adapter "github.com/wwwdotsheng/db-migration-operator/internal/adapter"
 	"github.com/wwwdotsheng/db-migration-operator/internal/resolver"
 	"github.com/wwwdotsheng/db-migration-operator/internal/version"
-	"github.com/go-logr/logr"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
