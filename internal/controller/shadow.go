@@ -180,19 +180,21 @@ func summarizeFailure(raw, jobName string) string {
 	lines := strings.Split(raw, "\n")
 
 	// 优先找脚本自己标的失败行（形如 "SHADOW-VALIDATION-FAILED: 试跑失败"）
-	for _, l := range lines {
-		if strings.Contains(l, "SHADOW-VALIDATION-FAILED:") {
-			summary := strings.TrimSpace(l)
-			// 再附上紧随其后的第一行非空内容（通常是数据库的真正报错）
-			for _, l2 := range lines {
-				t := strings.TrimSpace(l2)
-				if t != "" && t != summary && !strings.HasPrefix(t, "SHADOW-VALIDATION-FAILED:") {
-					summary += " | " + t
-					break
-				}
-			}
-			return clip(summary, 300) + "（完整日志: kubectl logs job/" + jobName + "）"
+	for i, l := range lines {
+		if !strings.Contains(l, "SHADOW-VALIDATION-FAILED:") {
+			continue
 		}
+		summary := strings.TrimSpace(l)
+		// ★ 从标记行【之后】往下找第一条非空内容 ——
+		//   那通常才是数据库给的真报错（"relation xxx does not exist"）。
+		//   从头扫会抓到 "[1/4] initdb..." 这种进度行，没信息量。
+		for _, l2 := range lines[i+1:] {
+			if t := strings.TrimSpace(l2); t != "" {
+				summary += " | " + t
+				break
+			}
+		}
+		return clip(summary, 300) + "（完整日志: kubectl logs job/" + jobName + "）"
 	}
 
 	// 兜底：取最后一行非空内容
