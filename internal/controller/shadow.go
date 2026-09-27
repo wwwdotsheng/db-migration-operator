@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -161,11 +162,58 @@ func (r *SchemaMigrationReconciler) shadowJobFailure(ctx context.Context, job *b
 	for i := range pods.Items {
 		for _, cs := range pods.Items[i].Status.ContainerStatuses {
 			if cs.State.Terminated != nil && cs.State.Terminated.Message != "" {
-				return cs.State.Terminated.Message
+				return summarizeFailure(cs.State.Terminated.Message, job.Name)
 			}
 		}
 	}
-	return "Job 失败，但没有 termination message（检查容器是否写了 /dev/termination-log）"
+	return "Job 失败，但拿不到容器输出（检查 RBAC 是否有 pods 的 get 权限）"
+}
+
+// summarizeFailure 把容器的整段输出压成一行摘要。
+//
+// ★ 为什么必须压：
+//
+//	status.message 会写进 etcd 对象，整段 stdout（几十行）会
+//	撑大对象、kubectl 输出难读、而且真正有用的那行被淹掉。
+//	完整输出去 Job 日志里看 —— 所以摘要里带上怎么查。
+func summarizeFailure(raw, jobName string) string {
+	lines := strings.Split(raw, "\n")
+
+	// 优先找脚本自己标的失败行（形如 "SHADOW-VALIDATION-FAILED: 试跑失败"）
+	for _, l := range lines {
+		if strings.Contains(l, "SHADOW-VALIDATION-FAILED:") {
+			summary := strings.TrimSpace(l)
+			// 再附上紧随其后的第一行非空内容（通常是数据库的真正报错）
+			for _, l2 := range lines {
+				t := strings.TrimSpace(l2)
+				if t != "" && t != summary && !strings.HasPrefix(t, "SHADOW-VALIDATION-FAILED:") {
+					summary += " | " + t
+					break
+				}
+			}
+			return clip(summary, 300) + "（完整日志: kubectl logs job/" + jobName + "）"
+		}
+	}
+
+	// 兜底：取最后一行非空内容
+	for i := len(lines) - 1; i >= 0; i-- {
+		if t := strings.TrimSpace(lines[i]); t != "" {
+			return clip(t, 300) + "（完整日志: kubectl logs job/" + jobName + "）"
+		}
+	}
+	return "Job 失败，输出为空（完整日志: kubectl logs job/" + jobName + "）"
+}
+
+// clip 按【字节】截断，但不会把一个 UTF-8 字符切一半。
+func clip(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "…"
 }
 
 // createShadowJob 组装并创建预演 Job。

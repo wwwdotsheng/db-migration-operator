@@ -44,6 +44,15 @@ var (
 	BeforeVersionNotSatisfied = errors.New("before version not satisfied")
 )
 
+// secretRetryInterval 是「等 Secret 出现」的重试间隔。
+//
+// ★ 为什么轮询而不是 watch Secret：
+//
+//	为了最小权限，Resolver 走 APIReader（只给 secrets 的 get），
+//	没有 list/watch —— 那样 watch 不了 Secret。
+//	→ 只能轮询。30 分钟太长（建好 Secret 要干等），2 分钟是折中。
+const secretRetryInterval = 2 * time.Minute
+
 var validChangeType = []dbv1.SchemaMigrationChangeType{
 	dbv1.ChangeTypeExpand,
 	dbv1.ChangeTypeContract,
@@ -132,8 +141,8 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 					return ctrl.Result{}, perr
 				}
 				r.Recorder.Eventf(&migration, corev1.EventTypeWarning, dbv1.ReasonSecretNotFound,
-					"等待 Secret 出现，30 分钟后重试: %v", err)
-				return ctrl.Result{RequeueAfter: 30 * time.Minute}, nil
+					"等待 Secret 出现，%s 后重试: %v", secretRetryInterval, err)
+				return ctrl.Result{RequeueAfter: secretRetryInterval}, nil
 			case errors.Is(err, adapter.ErrUnauthorizedSecret):
 				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
 					return ctrl.Result{}, perr
@@ -168,6 +177,32 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 			return ctrl.Result{}, nil
 		}
 
+		// ① ★ 版本依赖检查必须在【预演之前】。
+		//
+		//	否则会并发：t2 声明 beforeVersion=1，但预演先跑了 ——
+		//	那时 t1 还没在真库执行，t2 预演时 dump 到的 schema 里没有 t1 建的表，
+		//	于是 t2 的预演误报失败。实测踩到过。
+		if migration.Spec.BeforeVersion != nil {
+			if berr := r.judgeBlock(ctx, persistent, *migration.Spec.BeforeVersion); berr != nil {
+				if errors.Is(berr, BeforeVersionNotSatisfied) {
+					if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
+						metav1.ConditionTrue, dbv1.ReasonBeforeVersionNotSatisfied, berr.Error()); cerr != nil {
+						return ctrl.Result{}, cerr
+					}
+					if perr := r.patchStatus(ctx, &migration, dbv1.PhaseBlocked, berr.Error()); perr != nil {
+						return ctrl.Result{}, perr
+					}
+					r.Recorder.Eventf(&migration, corev1.EventTypeWarning,
+						dbv1.ReasonBeforeVersionNotSatisfied, "等待前置版本 %d", *migration.Spec.BeforeVersion)
+					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
+				}
+				return ctrl.Result{}, berr
+			}
+		}
+
+		// ② 影子预演
+		// ★ 用 Condition 而不是 Phase 判断「要不要预演」。
+		//   Phase 会被 Blocked 等中间态覆盖，而 Condition 是单调的。
 		if !meta.IsStatusConditionTrue(migration.Status.Conditions, dbv1.ConditionShadowValidated) {
 			done, serr := r.shadowValidate(ctx, &migration, persistent, dbCfg, serverVersion)
 			if serr != nil {
@@ -182,7 +217,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				return ctrl.Result{}, nil
 			}
 			// ★ 声明式：Job 还没跑完就退出，等它变化再回来。
-			//   不要阻塞 reconcile —— Owns(&Job{}) 会在 Job 状态变化时唤醒我们。
+			//   Owns(&Job{}) 会在 Job 状态变化时唤醒我们。
 			if !done {
 				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 			}
@@ -192,31 +227,18 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				return ctrl.Result{}, cerr
 			}
 			r.Recorder.Event(&migration, corev1.EventTypeNormal, "ShadowValidated", "影子预演通过")
-
-			if uerr := r.patchStatus(ctx, &migration, dbv1.PhaseApplying, ""); uerr != nil {
-				return ctrl.Result{}, uerr
-			}
 		}
 
-		if migration.Status.Phase == dbv1.PhaseBlocked && migration.Spec.BeforeVersion != nil {
-			if err := r.judgeBlock(ctx, persistent, *migration.Spec.BeforeVersion); err != nil {
-				if errors.Is(err, BeforeVersionNotSatisfied) {
-					if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
-						metav1.ConditionTrue, dbv1.ReasonBeforeVersionNotSatisfied, err.Error()); cerr != nil {
-						return ctrl.Result{}, cerr
-					}
-					r.Recorder.Eventf(&migration, corev1.EventTypeWarning,
-						dbv1.ReasonBeforeVersionNotSatisfied, "等待前置版本: %v", err)
-					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-				}
-				return ctrl.Result{}, err
-			}
-		}
-
+		// ③ 解除阻塞
+		// ★ 这一段仍然需要：预演只在 Condition 未置位时跑，
+		//   而「曾经预演通过、后来因为等版本被 Blocked」的 CR 不会再走预演。
 		if migration.Status.Phase == dbv1.PhaseBlocked {
-			err = r.patchStatus(ctx, &migration, dbv1.PhaseApplying, "")
-			if err != nil {
-				return ctrl.Result{}, err
+			if perr := r.patchStatus(ctx, &migration, dbv1.PhaseApplying, ""); perr != nil {
+				return ctrl.Result{}, perr
+			}
+			if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
+				metav1.ConditionFalse, dbv1.ReasonMigrationApplied, "阻塞已解除"); cerr != nil {
+				return ctrl.Result{}, cerr
 			}
 			r.Recorder.Event(&migration, corev1.EventTypeNormal, "BlockCleared", "block is cleared")
 		}
