@@ -85,8 +85,16 @@ func resolveImage(image string) string {
 }
 
 // shadowJobName 生成确定性的 Job 名，便于幂等（重复 reconcile 不会建出多个）。
+//
+// ★ 必须把 generation 也算进去：
+//
+//	只按 namespace/name 算的话，改了 CR 的 applySql 之后 Job 名不变 ——
+//	而旧 Job 还在（TTL 10 分钟），reconcile 会看到它的 Succeeded > 0，
+//	误判「预演通过」，实际用的是【过期的预演结果】。
+//	generation 在 spec 变更时会 +1，所以名字跟着变，旧 Job 被自然淘汰。
 func shadowJobName(migration *dbv1.SchemaMigration) string {
-	sum := sha256.Sum256([]byte(migration.Namespace + "/" + migration.Name))
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%d",
+		migration.Namespace, migration.Name, migration.Generation)))
 	return "shadow-" + hex.EncodeToString(sum[:6])
 }
 
