@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	batchv1 "k8s.io/api/batch/v1"
@@ -59,6 +61,28 @@ type ValidationError struct {
 
 func (e *ValidationError) Error() string { return "影子预演失败: " + e.Reason }
 
+// imageRepository 读部署环境给的镜像仓库前缀。
+//
+// ★ 为什么放在 controller 而不是 driver：
+//
+//	「用哪个镜像」是 driver 的事（postgres:15-alpine）；
+//	「从哪个仓库拉」是部署环境的事（harbor.internal/dockerhub/）。
+//	两者分开，同一份代码既能跑在能直连公网的集群，也能跑在内网私有仓库。
+//
+// 空值 = 用镜像的原始名字。
+func imageRepository() string {
+	repo := os.Getenv("IMAGE_REPOSITORY")
+	if repo != "" && !strings.HasSuffix(repo, "/") {
+		repo += "/"
+	}
+	return repo
+}
+
+// resolveImage 把 driver 给的相对镜像名拼成完整名。
+func resolveImage(image string) string {
+	return imageRepository() + image
+}
+
 // shadowJobName 生成确定性的 Job 名，便于幂等（重复 reconcile 不会建出多个）。
 func shadowJobName(migration *dbv1.SchemaMigration) string {
 	sum := sha256.Sum256([]byte(migration.Namespace + "/" + migration.Name))
@@ -71,7 +95,7 @@ func shadowJobName(migration *dbv1.SchemaMigration) string {
 // 等 Job 状态变化（Owns 会唤醒）或者超时后重新入队。
 func (r *SchemaMigrationReconciler) shadowValidate(
 	ctx context.Context, migration *dbv1.SchemaMigration,
-	persistent adapter.Persistent, cfg adapter.Config,
+	persistent adapter.Persistent, cfg adapter.Config, serverVersion string,
 ) (bool, error) {
 	// ★ 能力由 driver 自己声明 —— controller 里不出现任何 driver 名字。
 	//   实现了 ShadowValidator = 支持预演；没实现就明确拒绝（不静默跳过）。
@@ -81,7 +105,7 @@ func (r *SchemaMigrationReconciler) shadowValidate(
 			Reason: fmt.Sprintf("driver %q 未实现影子预演（没有实现 adapter.ShadowValidator）", migration.Spec.Driver),
 		}
 	}
-	spec, err := sv.ShadowSpec(cfg, migration.Spec.ApplySql)
+	spec, err := sv.ShadowSpec(cfg, migration.Spec.ApplySql, serverVersion)
 	if err != nil {
 		return false, &ValidationError{Reason: fmt.Sprintf("组装预演容器规格失败: %v", err)}
 	}
@@ -184,7 +208,7 @@ func (r *SchemaMigrationReconciler) createShadowJob(
 					SecurityContext: shadowPodSecurityContext(spec),
 					Containers: []corev1.Container{{
 						Name:    "shadow",
-						Image:   spec.Image,
+						Image:   resolveImage(spec.Image),
 						Command: []string{"/bin/sh", "-c"},
 						Args:    []string{spec.Script},
 						Env:     spec.Env,

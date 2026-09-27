@@ -10,15 +10,26 @@ import (
 
 var _ ShadowValidator = (*MysqlAdapter)(nil)
 
-// MysqlShadowImage 跑 MySQL 预演的镜像。
+// mysqlShadowImage 按真库主版本选预演镜像。
 //
-// ★ 必须同时含 mysqld、mysql 客户端、mysqldump —— 预演要在同一个 Pod 里
-//
-//	起临时实例、dump 真库结构、导入、再试跑。官方镜像三者都有。
+// ★ 必须同时含 mysqld、mysql 客户端、mysqldump。
 //
 // 注：MySQL 里「schema」就是 database，一个连接只看到一个库，
 // 所以没有 PG 那种「导哪个 schema」的选项 —— 要导的就是 driverConfig.database。
-const MysqlShadowImage = "mysql:8"
+//
+// 返回相对镜像名，仓库前缀由部署环境拼。
+func mysqlShadowImage(serverVersion string) string {
+	major := serverVersion
+	if i := strings.IndexByte(major, '.'); i > 0 {
+		major = major[:i]
+	}
+	switch major {
+	case "5", "8":
+		return "mysql:" + major
+	default:
+		return "mysql:8"
+	}
+}
 
 // mysqlShadowScript 在预演容器里执行。
 //
@@ -92,7 +103,7 @@ mysql --socket="$SOCK" -u root "$SHADOW_DB" < /tmp/apply.sql 2>/tmp/err.log \
 echo "SHADOW-VALIDATION-PASSED"
 `
 
-func (m *MysqlAdapter) ShadowSpec(cfg Config, applySQL []string) (ShadowSpec, error) {
+func (m *MysqlAdapter) ShadowSpec(cfg Config, applySQL []string, serverVersion string) (ShadowSpec, error) {
 	my, ok := cfg.(*MysqlConfig)
 	if !ok {
 		return ShadowSpec{}, fmt.Errorf("MysqlAdapter.ShadowSpec: 期望 *MysqlConfig，收到 %T", cfg)
@@ -107,7 +118,7 @@ func (m *MysqlAdapter) ShadowSpec(cfg Config, applySQL []string) (ShadowSpec, er
 	sqlB64 := base64.StdEncoding.EncodeToString([]byte(buf.String()))
 
 	return ShadowSpec{
-		Image:  MysqlShadowImage,
+		Image:  mysqlShadowImage(serverVersion),
 		Script: mysqlShadowScript,
 		// ★ mysql:8 官方镜像里 mysql 用户的 uid 是 999
 		//   （PostgreSQL 的 alpine 镜像是 70 —— 这也是 driver 特定的）

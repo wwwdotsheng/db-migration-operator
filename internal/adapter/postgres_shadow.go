@@ -10,13 +10,28 @@ import (
 
 var _ ShadowValidator = (*PostgresAdapter)(nil)
 
-// PostgresShadowImage 跑 PG 预演的镜像。
+// postgresShadowImage 按真库主版本选预演镜像。
 //
 // ★ 必须同时含 postgres server 和 pg_dump/psql —— 预演要在同一个 Pod 里
+// 起一个临时实例、dump 真库 schema、导入、再试跑。官方 alpine 镜像两者都有。
 //
-//	起一个临时实例、dump 真库 schema、导入、再试跑。
-//	官方 alpine 镜像两者都有。
-const PostgresShadowImage = "postgres:15-alpine"
+// ★ 主版本必须跟【真库】对齐：pg_dump 的版本低于服务器版本会直接报
+// "server version mismatch"，预演全废。所以不能写死一个版本。
+//
+// 返回【相对镜像名】，仓库前缀由部署环境在 controller 侧拼。
+func postgresShadowImage(serverVersion string) string {
+	major := serverVersion
+	if i := strings.IndexByte(major, '.'); i > 0 {
+		major = major[:i]
+	}
+	switch major {
+	case "13", "14", "15", "16", "17":
+		return "postgres:" + major + "-alpine"
+	default:
+		// 兜底用 15：pg_dump 向后兼容老服务器，不会因为版本高而报错
+		return "postgres:15-alpine"
+	}
+}
 
 // postgresShadowScript 在预演容器里执行。
 //
@@ -79,7 +94,7 @@ psql -q -v ON_ERROR_STOP=1 -d postgres -f /tmp/apply.sql 2>/tmp/err.log \
 echo "SHADOW-VALIDATION-PASSED"
 `
 
-func (a *PostgresAdapter) ShadowSpec(cfg Config, applySQL []string) (ShadowSpec, error) {
+func (a *PostgresAdapter) ShadowSpec(cfg Config, applySQL []string, serverVersion string) (ShadowSpec, error) {
 	pg, ok := cfg.(*PostgresConfig)
 	if !ok {
 		return ShadowSpec{}, fmt.Errorf("PostgresAdapter.ShadowSpec: 期望 *PostgresConfig，收到 %T", cfg)
@@ -94,7 +109,7 @@ func (a *PostgresAdapter) ShadowSpec(cfg Config, applySQL []string) (ShadowSpec,
 	sqlB64 := base64.StdEncoding.EncodeToString([]byte(buf.String()))
 
 	return ShadowSpec{
-		Image:  PostgresShadowImage,
+		Image:  postgresShadowImage(serverVersion),
 		Script: postgresShadowScript,
 		// ★ postgres:15-alpine 里 postgres 用户的 uid 是 70 —— 必须显式指定，
 		//   因为这个镜像没有 USER 指令（默认 root），而 initdb 拒绝 root。

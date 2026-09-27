@@ -48,5 +48,9 @@ type ShadowValidator interface {
 	//
 	// cfg 是本 driver 自己的 Config 实现（PostgresConfig / MysqlConfig…），
 	// 实现方可以断言回具体类型拿需要的字段。
-	ShadowSpec(cfg Config, applySQL []string) (ShadowSpec, error)
+	//
+	// serverVersion 是真库的版本（形如 "15.4"）。
+	// ★ 预演镜像的【主版本必须跟它对上】——
+	//   pg_dump 的版本低于服务器版本会直接报 mismatch，预演全废。
+	ShadowSpec(cfg Config, applySQL []string, serverVersion string) (ShadowSpec, error)
 }

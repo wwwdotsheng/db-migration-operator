@@ -114,7 +114,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	case dbv1.PhaseInit,
 		dbv1.PhaseApplying,
 		dbv1.PhaseBlocked:
-		dsn, dbCfg, err := r.prepareDatabase(ctx, &migration)
+		dsn, dbCfg, serverVersion, err := r.prepareDatabase(ctx, &migration)
 		if err != nil {
 			switch {
 			case errors.Is(err, adapter.ErrNotParseDriverConfig):
@@ -162,7 +162,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 		}
 
 		if !meta.IsStatusConditionTrue(migration.Status.Conditions, dbv1.ConditionShadowValidated) {
-			done, serr := r.shadowValidate(ctx, &migration, persistent, dbCfg)
+			done, serr := r.shadowValidate(ctx, &migration, persistent, dbCfg, serverVersion)
 			if serr != nil {
 				if cerr := r.setCondition(ctx, &migration, dbv1.ConditionShadowValidated,
 					metav1.ConditionFalse, dbv1.ReasonValidationFailed, serr.Error()); cerr != nil {
@@ -334,40 +334,40 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, logger l
 // prepareDatabase 完成迁移执行前的连接准备：
 // 解析 driverConfig（注册表按 driver 分发）→ 读取 Secret 凭据 → 构建 DSN → 版本校验闸门。
 // 返回的 dsn 供迁移流程复用。
-func (r *SchemaMigrationReconciler) prepareDatabase(ctx context.Context, migration *dbv1.SchemaMigration) (dsn string, cfg adapter.Config, err error) {
+func (r *SchemaMigrationReconciler) prepareDatabase(ctx context.Context, migration *dbv1.SchemaMigration) (dsn string, cfg adapter.Config, serverVersion string, err error) {
 	cfg, err = adapter.DefaultConfigManager.Parse(migration.Spec.Driver, migration.Spec.DriverConfig.Raw)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: driver %q: %w", adapter.ErrNotParseDriverConfig, migration.Spec.Driver, err)
+		return "", nil, "", fmt.Errorf("%w: driver %q: %w", adapter.ErrNotParseDriverConfig, migration.Spec.Driver, err)
 	}
 
 	password, err := r.Resolver.ResolvePassword(ctx, migration.Namespace, cfg.SecretRef())
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 
 	dsn, err = cfg.BuildDSN(password)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 
 	parser, err := version.DefaultParserManager.New(migration.Spec.Driver, dsn)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 
 	v, err := parser.GetVersion(ctx)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 
 	ok, err := version.DefaultCheckerManager.Check(migration.Spec.Driver, v)
 	if err != nil {
-		return "", nil, err
+		return "", nil, "", err
 	}
 	if !ok {
-		return "", nil, fmt.Errorf("database version %s does not satisfy %s constraint", v, migration.Spec.Driver)
+		return "", nil, "", fmt.Errorf("database version %s does not satisfy %s constraint", v, migration.Spec.Driver)
 	}
-	return dsn, cfg, nil
+	return dsn, cfg, v, nil
 }
 
 // setCondition 更新一个 condition 并写回 status。
