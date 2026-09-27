@@ -63,6 +63,28 @@ const (
 	PhaseInit     SchemaMigrationStatusPhase = ""
 )
 
+// Condition 类型。用 status.conditions 表达「持续状态」——
+// 跟 Event 的区别：Event 是瞬时记录会过期，Condition 是当前事实。
+const (
+	// ConditionShadowValidated 表示影子预演已经通过。
+	// ★ 用 Condition 而不是 Phase 来判断「要不要预演」，
+	//   因为 Phase 会被 Blocked 等中间态覆盖，而 Condition 是单调的。
+	ConditionShadowValidated = "ShadowValidated"
+
+	// ConditionBlocked 表示当前因为某个原因停在 Blocked。
+	// Reason 区分原因：SecretNotFound / BeforeVersionNotSatisfied
+	ConditionBlocked = "Blocked"
+)
+
+// Condition Reason 常量。
+const (
+	ReasonValidationPassed          = "ValidationPassed"
+	ReasonValidationFailed          = "ValidationFailed"
+	ReasonSecretNotFound            = "SecretNotFound"
+	ReasonBeforeVersionNotSatisfied = "BeforeVersionNotSatisfied"
+	ReasonMigrationApplied          = "MigrationApplied"
+)
+
 // SchemaMigrationStatus defines the observed state of SchemaMigration.
 type SchemaMigrationStatus struct {
 	// +optional

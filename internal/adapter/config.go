@@ -47,6 +47,9 @@ func init() {
 	must(DefaultConfigManager.Register("mysql", func(raw []byte) (Config, error) {
 		return ParseMysqlConfig(raw)
 	}))
+	must(DefaultConfigManager.Register("postgres", func(raw []byte) (Config, error) {
+		return ParsePostgresConfig(raw)
+	}))
 }
 
 func must(err error) {

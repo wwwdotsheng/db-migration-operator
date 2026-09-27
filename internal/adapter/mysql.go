@@ -56,13 +56,13 @@ func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int
 
 func (adapter *MysqlAdapter) GetLatestVersion(ctx context.Context) (int, error) {
 	var v int
+	// ★ COALESCE 不能省：没有已完成版本时 MAX() 返回一行 NULL 而不是 NoRows，
+	//   而 Scan 到 int 会因为 "converting NULL to int is unsupported" 报错。
+	//   （原来只处理了 ErrNoRows，所以空表时会失败。）
 	err := adapter.db.QueryRowContext(ctx,
-		`SELECT MAX(version) AS "version" FROM schema_migrations WHERE status = ?;`,
+		`SELECT COALESCE(MAX(version), 0) FROM schema_migrations WHERE status = ?;`,
 		dbv1.PhaseDone).
 		Scan(&v)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
 	if err != nil {
 		return 0, fmt.Errorf("get latest version sql error：%v", err)
 	}
