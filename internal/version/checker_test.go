@@ -2,47 +2,81 @@ package version
 
 import "testing"
 
-func TestMysqlChecker(t *testing.T) {
-	c := NewMysqlChecker()
-	cases := []struct {
-		version string
-		want    bool
-	}{
-		{"8.0.46", true},  // 精确版本（当前部署，已验证）
-		{"8.0.45", false}, // 低一个 patch
-		{"8.0.47", false}, // 高一个 patch
-		{"8.1.0", false},  // Innovation
-		{"8.4.0", false},  // 未验证的 LTS
-	}
-	for _, tc := range cases {
-		got, err := c.Check(tc.version, MysqlVersionRange)
-		if err != nil {
-			t.Fatalf("Check(%s) error: %v", tc.version, err)
-		}
-		if got != tc.want {
-			t.Errorf("Check(%s) = %v, want %v", tc.version, got, tc.want)
-		}
-	}
-}
-
+// 这一组测的是【Checker 的语义】（semver 约束怎么解析），
+// 而不是【当前配置的范围值】——
+// 以后调整 MysqlVersionRange / PostgresVersionRange 不用改这里的断言。
 func TestPostgresChecker(t *testing.T) {
 	c := NewPostgresChecker()
 	cases := []struct {
+		name    string
 		version string
+		rangeS  string
 		want    bool
 	}{
-		{"16.4", true},  // 精确版本
-		{"16.3", false}, // 低一个 minor
-		{"16.5", false}, // 高一个 minor
-		{"14.0", false}, // 未验证的 major
+		{"范围：落在区间内", "15.19", ">= 13, < 18", true},
+		{"范围：下界", "13.0", ">= 13, < 18", true},
+		{"范围：上界外", "18.0", ">= 13, < 18", false},
+		{"范围：下界外", "12.9", ">= 13, < 18", false},
+		{"精确等号：命中", "16.4", "= 16.4", true},
+		{"精确等号：差一个 patch 就不命中", "16.5", "= 16.4", false},
+		{"历史版本也能表达（PG 9.6 → 10 开始是两位数）", "9.6.24", ">= 9.6, < 10", true},
 	}
 	for _, tc := range cases {
-		got, err := c.Check(tc.version, PostgresVersionRange)
-		if err != nil {
-			t.Fatalf("Check(%s) error: %v", tc.version, err)
-		}
-		if got != tc.want {
-			t.Errorf("Check(%s) = %v, want %v", tc.version, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := c.Check(tc.version, tc.rangeS)
+			if err != nil {
+				t.Fatalf("Check(%s, %q) error: %v", tc.version, tc.rangeS, err)
+			}
+			if got != tc.want {
+				t.Errorf("Check(%s, %q) = %v, want %v", tc.version, tc.rangeS, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestMysqlChecker(t *testing.T) {
+	c := NewMysqlChecker()
+	cases := []struct {
+		name    string
+		version string
+		rangeS  string
+		want    bool
+	}{
+		{"范围：5.7 在区间内", "5.7.44", ">= 5.7, < 9", true},
+		{"范围：8.0 在区间内", "8.0.36", ">= 5.7, < 9", true},
+		{"范围：8.4 在区间内", "8.4.11", ">= 5.7, < 9", true},
+		{"范围：9.0 超出上界", "9.1.0", ">= 5.7, < 9", false},
+		{"范围：5.6 低于下界", "5.6.51", ">= 5.7, < 9", false},
+		{"精确等号", "8.0.46", "= 8.0.46", true},
+		{"精确等号：差一个 patch 就不命中", "8.0.45", "= 8.0.46", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := c.Check(tc.version, tc.rangeS)
+			if err != nil {
+				t.Fatalf("Check(%s, %q) error: %v", tc.version, tc.rangeS, err)
+			}
+			if got != tc.want {
+				t.Errorf("Check(%s, %q) = %v, want %v", tc.version, tc.rangeS, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestProductionRangesAreValid 只断言【当前配置的约束本身能被解析】，
+// 不断言它覆盖哪些版本 —— 覆盖范围是运维决策，不是这个测试的职责。
+func TestProductionRangesAreValid(t *testing.T) {
+	for name, tc := range map[string]struct {
+		checker        Checker
+		vrange, sample string
+	}{
+		"mysql":    {NewMysqlChecker(), MysqlVersionRange, "8.0.46"},
+		"postgres": {NewPostgresChecker(), PostgresVersionRange, "15.19"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := tc.checker.Check(tc.sample, tc.vrange); err != nil {
+				t.Fatalf("当前配置的约束 %q 无法解析: %v", tc.vrange, err)
+			}
+		})
 	}
 }

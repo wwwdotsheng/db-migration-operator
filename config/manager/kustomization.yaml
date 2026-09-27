@@ -4,5 +4,5 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 images:
 - name: controller
-  newName: db-migration-operator-controller
-  newTag: v0.8
+  newName: harbor.internal/library/db-migration-operator
+  newTag: 56c7f68

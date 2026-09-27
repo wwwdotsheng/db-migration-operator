@@ -45,6 +45,12 @@ spec:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
+        # ★ 预演 Job 的镜像仓库前缀（部署环境配置）。
+        #   driver 只给相对镜像名（postgres:15-alpine），这里补上「从哪拉」。
+        #   留空 = 用镜像原始名（适合能直连公网的集群）。
+        env:
+          - name: IMAGE_REPOSITORY
+            value: "harbor.internal/dockerhub/"
         ports:
         - containerPort: 8081
           name: health

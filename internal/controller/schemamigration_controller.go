@@ -140,6 +140,13 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				}
 				return ctrl.Result{}, nil
 			default:
+				// ★ 未知错误也要让用户看得见 —— 否则 CR 的 phase 一直是空的，
+				//   只能翻 Operator 日志才知道为什么。但仍然返回 err，
+				//   因为这类错误（连不上库、版本不匹配…）重试可能恢复。
+				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
+					return ctrl.Result{}, perr
+				}
+				r.Recorder.Event(&migration, corev1.EventTypeWarning, "PrepareDatabaseFailed", err.Error())
 				return ctrl.Result{}, err
 			}
 		}
