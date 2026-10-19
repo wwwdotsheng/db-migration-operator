@@ -5,4 +5,4 @@ kind: Kustomization
 images:
 - name: controller
   newName: harbor.internal/library/db-migration-operator
-  newTag: 3a9085c
+  newTag: 8f16f97
