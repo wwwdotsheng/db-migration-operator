@@ -8,7 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-var _ ShadowValidator = (*PostgresAdapter)(nil)
+var _ ShadowValidator = (*PostgresDriver)(nil)
 
 // postgresShadowImage 按真库主版本选预演镜像。
 //
@@ -94,10 +94,10 @@ psql -q -v ON_ERROR_STOP=1 -d postgres -f /tmp/apply.sql 2>/tmp/err.log \
 echo "SHADOW-VALIDATION-PASSED"
 `
 
-func (a *PostgresAdapter) ShadowSpec(cfg Config, applySQL []string, serverVersion string) (ShadowSpec, error) {
+func (a *PostgresDriver) ShadowSpec(cfg Config, applySQL []string, serverVersion string) (ShadowSpec, error) {
 	pg, ok := cfg.(*PostgresConfig)
 	if !ok {
-		return ShadowSpec{}, fmt.Errorf("PostgresAdapter.ShadowSpec: 期望 *PostgresConfig，收到 %T", cfg)
+		return ShadowSpec{}, fmt.Errorf("PostgresDriver.ShadowSpec: 期望 *PostgresConfig，收到 %T", cfg)
 	}
 
 	// ★ SQL 用 base64 传，避免引号/换行在 shell 里被拆坏

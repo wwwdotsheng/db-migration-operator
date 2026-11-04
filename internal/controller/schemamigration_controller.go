@@ -278,7 +278,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	return ctrl.Result{}, nil
 }
 
-func (r *SchemaMigrationReconciler) judgeBlock(ctx context.Context, persistent adapter.Persistent, version int) error {
+func (r *SchemaMigrationReconciler) judgeBlock(ctx context.Context, persistent adapter.Driver, version int) error {
 	status, exists, err := persistent.GetVersionStatus(ctx, version)
 	if err != nil {
 		return err
@@ -289,7 +289,7 @@ func (r *SchemaMigrationReconciler) judgeBlock(ctx context.Context, persistent a
 	return nil
 }
 
-func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, logger logr.Logger, persistent adapter.Persistent, migration *dbv1.SchemaMigration) error {
+func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, logger logr.Logger, persistent adapter.Driver, migration *dbv1.SchemaMigration) error {
 	if err := persistent.Init(ctx); err != nil {
 		return fmt.Errorf("failed init mysql adapter: %w", err)
 	}
@@ -362,7 +362,7 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, logger l
 // 由调用方复用，并在本轮 Reconcile 结束时 Close。
 func (r *SchemaMigrationReconciler) prepareDatabase(
 	ctx context.Context, migration *dbv1.SchemaMigration,
-) (adapter.Persistent, adapter.Config, string, error) {
+) (adapter.Driver, adapter.Config, string, error) {
 	cfg, err := adapter.DefaultConfigManager.Parse(migration.Spec.Driver, migration.Spec.DriverConfig.Raw)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("%w: driver %q: %w", adapter.ErrNotParseDriverConfig, migration.Spec.Driver, err)

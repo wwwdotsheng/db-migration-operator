@@ -11,25 +11,25 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-type MysqlAdapter struct {
+type MysqlDriver struct {
 	db *sql.DB
 }
 
-func NewMysqlAdapter(dsn string) (*MysqlAdapter, error) {
+func NewMysqlDriver(dsn string) (*MysqlDriver, error) {
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open MySQL connection: %w", err)
 	}
-	return &MysqlAdapter{
+	return &MysqlDriver{
 		db: db,
 	}, nil
 }
 
-var _ Persistent = (*MysqlAdapter)(nil)
+var _ Driver = (*MysqlDriver)(nil)
 
 // GetServerVersion 返回 MySQL 的原始版本串（例如 "8.0.36-0ubuntu0.22.04.1"）。
 // 不做清洗：发行版后缀、MariaDB 伪装前缀由 internal/version 的 Checker 处理。
-func (adapter *MysqlAdapter) GetServerVersion(ctx context.Context) (string, error) {
+func (adapter *MysqlDriver) GetServerVersion(ctx context.Context) (string, error) {
 	var raw string
 	if err := adapter.db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&raw); err != nil {
 		return "", fmt.Errorf("query version: %w", err)
@@ -37,7 +37,7 @@ func (adapter *MysqlAdapter) GetServerVersion(ctx context.Context) (string, erro
 	return raw, nil
 }
 
-func (adapter *MysqlAdapter) Init(ctx context.Context) error {
+func (adapter *MysqlDriver) Init(ctx context.Context) error {
 	if _, err := adapter.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations
 (
@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations
 	return nil
 }
 
-func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
+func (adapter *MysqlDriver) GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
 	var resStatus dbv1.SchemaMigrationStatusPhase
 	err := adapter.db.QueryRowContext(ctx,
 		`SELECT status FROM schema_migrations WHERE version = ?`, version).Scan(&resStatus)
@@ -64,7 +64,7 @@ func (adapter *MysqlAdapter) GetMigrationStatus(ctx context.Context, version int
 	return resStatus, true, nil
 }
 
-func (adapter *MysqlAdapter) GetLatestVersion(ctx context.Context) (int, error) {
+func (adapter *MysqlDriver) GetLatestVersion(ctx context.Context) (int, error) {
 	var v int
 	// ★ COALESCE 不能省：没有已完成版本时 MAX() 返回一行 NULL 而不是 NoRows，
 	//   而 Scan 到 int 会因为 "converting NULL to int is unsupported" 报错。
@@ -79,7 +79,7 @@ func (adapter *MysqlAdapter) GetLatestVersion(ctx context.Context) (int, error) 
 	return v, nil
 }
 
-func (adapter *MysqlAdapter) InsertNewVersion(ctx context.Context, name string, version int, status dbv1.SchemaMigrationStatusPhase) error {
+func (adapter *MysqlDriver) InsertNewVersion(ctx context.Context, name string, version int, status dbv1.SchemaMigrationStatusPhase) error {
 	if _, err := adapter.db.ExecContext(ctx,
 		`INSERT INTO schema_migrations (name, version, status) VALUE (?, ?, ?)`,
 		name,
@@ -92,7 +92,7 @@ func (adapter *MysqlAdapter) InsertNewVersion(ctx context.Context, name string, 
 	return nil
 }
 
-func (adapter *MysqlAdapter) ExecSql(ctx context.Context, queryArr []string) (int, error) {
+func (adapter *MysqlDriver) ExecSql(ctx context.Context, queryArr []string) (int, error) {
 	logger := logf.FromContext(ctx)
 	runLines := 0
 	for i, query := range queryArr {
@@ -125,7 +125,7 @@ func isIdempotentErrno(errno uint16) bool {
 	return false
 }
 
-func (adapter *MysqlAdapter) UpdateVersion(ctx context.Context, version int, prevStatus, destStatus dbv1.SchemaMigrationStatusPhase) error {
+func (adapter *MysqlDriver) UpdateVersion(ctx context.Context, version int, prevStatus, destStatus dbv1.SchemaMigrationStatusPhase) error {
 	res, err := adapter.db.ExecContext(ctx,
 		`UPDATE schema_migrations SET status = ? WHERE status = ? AND version = ?;`,
 		destStatus,
@@ -144,7 +144,7 @@ func (adapter *MysqlAdapter) UpdateVersion(ctx context.Context, version int, pre
 	return nil
 }
 
-func (adapter *MysqlAdapter) GetVersionStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
+func (adapter *MysqlDriver) GetVersionStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
 	var resStatus dbv1.SchemaMigrationStatusPhase
 	err := adapter.db.QueryRowContext(ctx, `SELECT status FROM schema_migrations WHERE version = ?;`, version).
 		Scan(&resStatus)
@@ -160,7 +160,7 @@ func (adapter *MysqlAdapter) GetVersionStatus(ctx context.Context, version int) 
 	return resStatus, true, nil
 }
 
-func (adapter *MysqlAdapter) Close(ctx context.Context) error {
+func (adapter *MysqlDriver) Close(ctx context.Context) error {
 	if err := adapter.db.Close(); err != nil {
 		return fmt.Errorf("close db error: %v", err)
 	}

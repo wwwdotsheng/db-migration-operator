@@ -11,29 +11,29 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// PostgresAdapter 是 Persistent 的 PostgreSQL 实现。
+// PostgresDriver 是 Driver 的 PostgreSQL 实现。
 //
-// 跟 MysqlAdapter 的区别（三处）：
+// 跟 MysqlDriver 的区别（三处）：
 //  1. 建表语法：serial 而不是 auto_increment；PG 不支持列内联 comment
 //  2. 占位符：$1 $2 $3 而不是 ?
 //  3. 幂等错误码：SQLSTATE 字符串而不是 errno
-type PostgresAdapter struct {
+type PostgresDriver struct {
 	db *sql.DB
 }
 
-func NewPostgresAdapter(dsn string) (*PostgresAdapter, error) {
+func NewPostgresDriver(dsn string) (*PostgresDriver, error) {
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open PostgreSQL connection: %w", err)
 	}
-	return &PostgresAdapter{db: db}, nil
+	return &PostgresDriver{db: db}, nil
 }
 
-var _ Persistent = (*PostgresAdapter)(nil)
+var _ Driver = (*PostgresDriver)(nil)
 
 // GetServerVersion 返回 PostgreSQL 的原始版本串（SHOW server_version 的输出）。
 // 不做清洗：版本号提取由 internal/version 的 Checker 处理。
-func (a *PostgresAdapter) GetServerVersion(ctx context.Context) (string, error) {
+func (a *PostgresDriver) GetServerVersion(ctx context.Context) (string, error) {
 	var raw string
 	if err := a.db.QueryRowContext(ctx, "SHOW server_version").Scan(&raw); err != nil {
 		return "", fmt.Errorf("query server_version: %w", err)
@@ -41,7 +41,7 @@ func (a *PostgresAdapter) GetServerVersion(ctx context.Context) (string, error) 
 	return raw, nil
 }
 
-func (a *PostgresAdapter) Init(ctx context.Context) error {
+func (a *PostgresDriver) Init(ctx context.Context) error {
 	// ★ serial 而不是 auto_increment
 	//   ★ PG 也不支持列内联 comment（要单独 COMMENT ON），所以这里没写注释
 	if _, err := a.db.ExecContext(ctx, `
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations
 	return nil
 }
 
-func (a *PostgresAdapter) GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
+func (a *PostgresDriver) GetMigrationStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
 	var resStatus dbv1.SchemaMigrationStatusPhase
 	err := a.db.QueryRowContext(ctx,
 		`SELECT status FROM schema_migrations WHERE version = $1`, version).Scan(&resStatus)
@@ -70,7 +70,7 @@ func (a *PostgresAdapter) GetMigrationStatus(ctx context.Context, version int) (
 	return resStatus, true, nil
 }
 
-func (a *PostgresAdapter) GetLatestVersion(ctx context.Context) (int, error) {
+func (a *PostgresDriver) GetLatestVersion(ctx context.Context) (int, error) {
 	var v int
 	// ★ COALESCE 不能省：没有已完成版本时 MAX() 返回 NULL，
 	//   而 Scan 到 int 会因为 "converting NULL to int is unsupported" 报错。
@@ -84,7 +84,7 @@ func (a *PostgresAdapter) GetLatestVersion(ctx context.Context) (int, error) {
 	return v, nil
 }
 
-func (a *PostgresAdapter) InsertNewVersion(ctx context.Context, name string, version int, status dbv1.SchemaMigrationStatusPhase) error {
+func (a *PostgresDriver) InsertNewVersion(ctx context.Context, name string, version int, status dbv1.SchemaMigrationStatusPhase) error {
 	if _, err := a.db.ExecContext(ctx,
 		`INSERT INTO schema_migrations (name, version, status) VALUES ($1, $2, $3)`,
 		name, version, status,
@@ -94,7 +94,7 @@ func (a *PostgresAdapter) InsertNewVersion(ctx context.Context, name string, ver
 	return nil
 }
 
-func (a *PostgresAdapter) ExecSql(ctx context.Context, queryArr []string) (int, error) {
+func (a *PostgresDriver) ExecSql(ctx context.Context, queryArr []string) (int, error) {
 	logger := logf.FromContext(ctx)
 	runLines := 0
 	for i, query := range queryArr {
@@ -136,7 +136,7 @@ func isIdempotentSQLState(code pq.ErrorCode) bool {
 	return false
 }
 
-func (a *PostgresAdapter) UpdateVersion(ctx context.Context, version int, prevStatus, destStatus dbv1.SchemaMigrationStatusPhase) error {
+func (a *PostgresDriver) UpdateVersion(ctx context.Context, version int, prevStatus, destStatus dbv1.SchemaMigrationStatusPhase) error {
 	res, err := a.db.ExecContext(ctx,
 		`UPDATE schema_migrations SET status = $1 WHERE status = $2 AND version = $3;`,
 		destStatus, prevStatus, version,
@@ -154,7 +154,7 @@ func (a *PostgresAdapter) UpdateVersion(ctx context.Context, version int, prevSt
 	return nil
 }
 
-func (a *PostgresAdapter) GetVersionStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
+func (a *PostgresDriver) GetVersionStatus(ctx context.Context, version int) (dbv1.SchemaMigrationStatusPhase, bool, error) {
 	var resStatus dbv1.SchemaMigrationStatusPhase
 	err := a.db.QueryRowContext(ctx,
 		`SELECT status FROM schema_migrations WHERE version = $1;`, version).Scan(&resStatus)
@@ -170,7 +170,7 @@ func (a *PostgresAdapter) GetVersionStatus(ctx context.Context, version int) (db
 	return resStatus, true, nil
 }
 
-func (a *PostgresAdapter) Close(ctx context.Context) error {
+func (a *PostgresDriver) Close(ctx context.Context) error {
 	if err := a.db.Close(); err != nil {
 		return fmt.Errorf("close db error: %v", err)
 	}

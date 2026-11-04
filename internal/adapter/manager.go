@@ -2,13 +2,13 @@ package adapter
 
 import "fmt"
 
-// Factory 按 DSN 造一个 Persistent。
-type Factory func(dsn string) (Persistent, error)
+// Factory 按 DSN 造一个 Driver。
+type Factory func(dsn string) (Driver, error)
 
 // Manager 按 driver 名分派到对应的 adapter 实现。
 //
 // 跟 ConfigManager / CheckerManager 同一套注册模式：
-// 加新数据库 = 实现 Persistent + 注册一行，controller 零改动。
+// 加新数据库 = 实现 Driver + 注册一行，controller 零改动。
 //
 // ★ 为什么不用「switch driver」代替：
 //
@@ -32,7 +32,7 @@ func (m *Manager) Register(driver string, f Factory) error {
 }
 
 // New 按 driver 造 adapter。driver 未注册时返回 ErrNoAdapterForDriver。
-func (m *Manager) New(driver, dsn string) (Persistent, error) {
+func (m *Manager) New(driver, dsn string) (Driver, error) {
 	f, ok := m.factories[driver]
 	if !ok {
 		return nil, fmt.Errorf("%w: driver %q", ErrNoAdapterForDriver, driver)
@@ -52,10 +52,10 @@ func (m *Manager) Registered() []string {
 var DefaultAdapterManager = NewManager()
 
 func init() {
-	must(DefaultAdapterManager.Register("mysql", func(dsn string) (Persistent, error) {
-		return NewMysqlAdapter(dsn)
+	must(DefaultAdapterManager.Register("mysql", func(dsn string) (Driver, error) {
+		return NewMysqlDriver(dsn)
 	}))
-	must(DefaultAdapterManager.Register("postgres", func(dsn string) (Persistent, error) {
-		return NewPostgresAdapter(dsn)
+	must(DefaultAdapterManager.Register("postgres", func(dsn string) (Driver, error) {
+		return NewPostgresDriver(dsn)
 	}))
 }

@@ -8,7 +8,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-var _ ShadowValidator = (*MysqlAdapter)(nil)
+var _ ShadowValidator = (*MysqlDriver)(nil)
 
 // mysqlShadowImage 按真库主版本选预演镜像。
 //
@@ -103,10 +103,10 @@ mysql --socket="$SOCK" -u root "$SHADOW_DB" < /tmp/apply.sql 2>/tmp/err.log \
 echo "SHADOW-VALIDATION-PASSED"
 `
 
-func (m *MysqlAdapter) ShadowSpec(cfg Config, applySQL []string, serverVersion string) (ShadowSpec, error) {
+func (m *MysqlDriver) ShadowSpec(cfg Config, applySQL []string, serverVersion string) (ShadowSpec, error) {
 	my, ok := cfg.(*MysqlConfig)
 	if !ok {
-		return ShadowSpec{}, fmt.Errorf("MysqlAdapter.ShadowSpec: 期望 *MysqlConfig，收到 %T", cfg)
+		return ShadowSpec{}, fmt.Errorf("MysqlDriver.ShadowSpec: 期望 *MysqlConfig，收到 %T", cfg)
 	}
 
 	// ★ SQL 用 base64 传，避免引号/换行在 shell 里被拆坏

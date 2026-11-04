@@ -142,7 +142,7 @@ internal/resolver/                 Secret 读取（走 APIReader，绕开缓存�
 ```go
 DefaultCheckerManager.Register("mysql",    NewMysqlChecker(),    MysqlVersionRange)
 DefaultCheckerManager.Register("postgres", NewPostgresChecker(), PostgresVersionRange)
-// adapter 的注册同理：DefaultAdapterManager.Register("mysql", NewMysqlAdapter)
+// adapter 的注册同理：DefaultAdapterManager.Register("mysql", NewMysqlDriver)
 ```
 
 ---

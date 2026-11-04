@@ -104,7 +104,7 @@ func shadowJobName(migration *dbv1.SchemaMigration) string {
 // 等 Job 状态变化（Owns 会唤醒）或者超时后重新入队。
 func (r *SchemaMigrationReconciler) shadowValidate(
 	ctx context.Context, migration *dbv1.SchemaMigration,
-	persistent adapter.Persistent, cfg adapter.Config, serverVersion string,
+	persistent adapter.Driver, cfg adapter.Config, serverVersion string,
 ) (bool, error) {
 	// ★ 能力由 driver 自己声明 —— controller 里不出现任何 driver 名字。
 	//   实现了 ShadowValidator = 支持预演；没实现就明确拒绝（不静默跳过）。

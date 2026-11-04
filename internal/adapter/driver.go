@@ -6,7 +6,7 @@ import (
 	dbv1 "github.com/wwwdotsheng/db-migration-operator/api/v1"
 )
 
-type Persistent interface {
+type Driver interface {
 	Init(ctx context.Context) error
 	// GetServerVersion 返回数据库的原始版本字符串（不做格式处理）。
 	// 版本查询属于"数据库通道"的能力，因此由 adapter 承担；

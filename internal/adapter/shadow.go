@@ -35,14 +35,14 @@ type ShadowSpec struct {
 	FSGroup   *int64
 }
 
-// ShadowValidator 是 Persistent 的【可选】扩展。
+// ShadowValidator 是 Driver 的【可选】扩展。
 //
 // 实现了它 = 这个 driver 支持影子预演。
 // 没实现 → controller 明确拒绝（不静默跳过 —— 静默跳过比报错更危险）。
 //
 // ★ 这样 controller 里不会再出现任何 driver 名字。
 type ShadowValidator interface {
-	Persistent
+	Driver
 
 	// ShadowSpec 组装预演容器的规格。
 	//
