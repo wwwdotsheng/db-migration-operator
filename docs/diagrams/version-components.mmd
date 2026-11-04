@@ -1,0 +1,48 @@
+%% 版本检测组件关系（重构后：Adapter 负责取版本，version 包只做规范化 + 判断）
+%% 源文件：docs/diagrams/version-components.mmd
+%% 查看：Obsidian 里用 ```mermaid 代码块引用，或 mermaid.live 粘贴后导出 PNG/SVG
+%%
+%% 启动时注册（version/manager.go 的 init）：
+%%   DefaultCheckerManager.Register("mysql",    NewMysqlChecker(),    MysqlVersionRange)
+%%   DefaultCheckerManager.Register("postgres", NewPostgresChecker(), PostgresVersionRange)
+%% 启动时注册（adapter/manager.go 的 init）：
+%%   DefaultAdapterManager.Register("mysql",  NewMysqlAdapter)
+%%   DefaultAdapterManager.Register("postgres", NewPostgresAdapter)
+
+flowchart LR
+    subgraph C["internal/controller"]
+        P["prepareDatabase()"]
+        R["Reconcile()"]
+    end
+
+    subgraph A["internal/adapter（数据库通道）"]
+        AM["DefaultAdapterManager"]
+        PI["Persistent（接口）"]
+        MA["MysqlAdapter"]
+        PA["PostgresAdapter"]
+        CF["DefaultConfigManager"]
+    end
+
+    subgraph V["internal/version（纯逻辑，无数据库依赖）"]
+        CM["DefaultCheckerManager"]
+        CI["Checker（接口）"]
+        MC["MysqlChecker"]
+        PC["PostgresChecker"]
+        SV["semverCheck()"]
+    end
+
+    R --> P
+    P -->|"① Parse(driver, driverConfig)"| CF
+    P -->|"② New(driver, dsn)"| AM
+    AM -->|"创建"| PI
+    PI -.->|"实现"| MA
+    PI -.->|"实现"| PA
+    P -->|"③ GetServerVersion(ctx) → raw"| PI
+    P -->|"④ Check(driver, raw) → normalized, ok"| CM
+    CM -->|"查表 driver → Checker + VersionRange"| CI
+    CI -.->|"实现"| MC
+    CI -.->|"实现"| PC
+    MC --> SV
+    PC --> SV
+    P -->|"⑤ 门禁通过 → 返回 Persistent"| R
+    R -->|"judgeBlock / shadowValidate / applyMigration"| PI

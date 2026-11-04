@@ -132,20 +132,17 @@ spec:
 cmd/main.go                        manager 入口
 api/v1/                            SchemaMigration CRD 类型
 internal/controller/               reconcile 状态机
-internal/version/                  按 driver 注册的版本检测三件套
-  ├─ Parser   取数据库版本字符串
-  ├─ Cleaner  清洗版本串（MariaDB 会伪装成 MySQL，要单独处理）
-  └─ Checker  版本是否满足该 driver 的支持区间
-internal/adapter/                  driverConfig 解析 / DSN 构建 / 账本读写 / DDL 执行
+internal/version/                  版本串规范化 + 版本范围判断（纯逻辑，不碰数据库）
+internal/adapter/                  driverConfig 解析 / DSN 构建 / 取服务器版本 / 账本读写 / DDL 执行
 internal/resolver/                 Secret 读取（走 APIReader，绕开缓存）
 ```
 
-**加一种数据库不用改控制器。** 版本检测拆成三组接口，按 driver 名注册到各自的 manager：
+**加一种数据库不用改控制器。** 版本检测：adapter 负责取原始版本串，version 包负责规范化与范围判断，两者都按 driver 名注册：
 
 ```go
 DefaultCheckerManager.Register("mysql",    NewMysqlChecker(),    MysqlVersionRange)
 DefaultCheckerManager.Register("postgres", NewPostgresChecker(), PostgresVersionRange)
-// Parser / Cleaner 同理
+// adapter 的注册同理：DefaultAdapterManager.Register("mysql", NewMysqlAdapter)
 ```
 
 ---
@@ -167,9 +164,9 @@ DefaultCheckerManager.Register("postgres", NewPostgresChecker(), PostgresVersion
 
 **`Failed` 是终态，改对 spec 也不会自动重试。** CR 进了 `Failed` 之后 `reconcile` 直接返回，即使把 spec 改对也起不来，得人工清 status。这是有意的（不让自动重试掩盖真问题），但缺一个「条件变化后自动拉回」的机制。
 
-**MySQL 是唯一打通完整链路的 driver。** PostgreSQL 只实现了版本检测三件套（Parser / Checker / Cleaner），`driverConfig` 解析和迁移执行目前仍然只有 MySQL 实现。用 `driver: postgres` 会停在 `Failed`。
+**PostgreSQL 尚未完成独立验收。** 配置解析、账本、DDL 执行与影子预演代码均已存在，但只在 MySQL 上做过完整验收；PostgreSQL 链路需要在独立测试库中按 E9 验证，未验证前不宣称可用。
 
-**没有版本覆盖冲突检测。** 如果两个 CR 声明了同一个 `version` 但 SQL 不同，现在不会拦。`internal/adapter/version_parser.go` 留了位置，算法还没写。
+**没有版本覆盖冲突检测。** 如果两个 CR 声明了同一个 `version` 但 SQL 不同，现在不会拦。
 
 **没做多副本 leader election 的故障演练。** 只在单机 Kind 和自建 K8s 上验证过单副本运行。
 

@@ -27,6 +27,16 @@ func NewMysqlAdapter(dsn string) (*MysqlAdapter, error) {
 
 var _ Persistent = (*MysqlAdapter)(nil)
 
+// GetServerVersion 返回 MySQL 的原始版本串（例如 "8.0.36-0ubuntu0.22.04.1"）。
+// 不做清洗：发行版后缀、MariaDB 伪装前缀由 internal/version 的 Checker 处理。
+func (adapter *MysqlAdapter) GetServerVersion(ctx context.Context) (string, error) {
+	var raw string
+	if err := adapter.db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&raw); err != nil {
+		return "", fmt.Errorf("query version: %w", err)
+	}
+	return raw, nil
+}
+
 func (adapter *MysqlAdapter) Init(ctx context.Context) error {
 	if _, err := adapter.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS schema_migrations

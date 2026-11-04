@@ -83,6 +83,7 @@ type SchemaMigrationReconciler struct {
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups=batch,resources=jobs,verbs=get;list;watch;create;delete
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -124,7 +125,7 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 	case dbv1.PhaseInit,
 		dbv1.PhaseApplying,
 		dbv1.PhaseBlocked:
-		dsn, dbCfg, serverVersion, err := r.prepareDatabase(ctx, &migration)
+		persistent, dbCfg, serverVersion, err := r.prepareDatabase(ctx, &migration)
 		if err != nil {
 			switch {
 			case errors.Is(err, adapter.ErrNotParseDriverConfig):
@@ -149,6 +150,12 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 					return ctrl.Result{}, perr
 				}
 				return ctrl.Result{}, nil
+			case errors.Is(err, adapter.ErrNoAdapterForDriver):
+				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
+					return ctrl.Result{}, perr
+				}
+				r.Recorder.Event(&migration, corev1.EventTypeWarning, "NoAdapterForDriver", err.Error())
+				return ctrl.Result{}, nil
 			default:
 				// ★ 未知错误也要让用户看得见 —— 否则 CR 的 phase 一直是空的，
 				//   只能翻 Operator 日志才知道为什么。但仍然返回 err，
@@ -160,23 +167,9 @@ func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Requ
 				return ctrl.Result{}, err
 			}
 		}
-
-		// ★ 用 Condition 而不是 Phase 判断「要不要预演」。
-		//
-		//	为什么：Phase 会被中间态覆盖。典型场景 ——
-		//	  Init 时 prepareDatabase 报 ErrNotFoundSecret → Phase 变 Blocked
-		//	  下次 reconcile 进来 Phase 已经是 Blocked
-		//	  → 如果这里判断 `Phase == Init`，预演就被【永久跳过】直接上真库了
-		//
-		//	Condition 是单调的（一旦 True 就不会自己变回去），所以不会漏。
-		persistent, aerr := adapter.DefaultAdapterManager.New(migration.Spec.Driver, dsn)
-		if aerr != nil {
-			if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, aerr.Error()); perr != nil {
-				return ctrl.Result{}, perr
-			}
-			r.Recorder.Event(&migration, corev1.EventTypeWarning, "NoAdapterForDriver", aerr.Error())
-			return ctrl.Result{}, nil
-		}
+		// ★ 连接的生命周期由本轮 Reconcile 持有：所有返回路径都会关闭。
+		//   旧实现从不调用 Close，长期运行会泄漏连接池。
+		defer persistent.Close(ctx)
 
 		// ① ★ 版本依赖检查必须在【预演之前】。
 		//
@@ -362,42 +355,55 @@ func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, logger l
 }
 
 // prepareDatabase 完成迁移执行前的连接准备：
-// 解析 driverConfig（注册表按 driver 分发）→ 读取 Secret 凭据 → 构建 DSN → 版本校验闸门。
-// 返回的 dsn 供迁移流程复用。
-func (r *SchemaMigrationReconciler) prepareDatabase(ctx context.Context, migration *dbv1.SchemaMigration) (dsn string, cfg adapter.Config, serverVersion string, err error) {
-	cfg, err = adapter.DefaultConfigManager.Parse(migration.Spec.Driver, migration.Spec.DriverConfig.Raw)
+// 解析 driverConfig（注册表按 driver 分发）→ 读取 Secret 凭据 → 构建 DSN
+// → 创建 adapter（数据库通道）→ 取服务器版本 → 版本校验闸门。
+//
+// ★ 版本查询由 adapter 承担（它本来就持有数据库连接），因此返回的 persistent
+// 由调用方复用，并在本轮 Reconcile 结束时 Close。
+func (r *SchemaMigrationReconciler) prepareDatabase(
+	ctx context.Context, migration *dbv1.SchemaMigration,
+) (adapter.Persistent, adapter.Config, string, error) {
+	cfg, err := adapter.DefaultConfigManager.Parse(migration.Spec.Driver, migration.Spec.DriverConfig.Raw)
 	if err != nil {
-		return "", nil, "", fmt.Errorf("%w: driver %q: %w", adapter.ErrNotParseDriverConfig, migration.Spec.Driver, err)
+		return nil, nil, "", fmt.Errorf("%w: driver %q: %w", adapter.ErrNotParseDriverConfig, migration.Spec.Driver, err)
 	}
 
 	password, err := r.Resolver.ResolvePassword(ctx, migration.Namespace, cfg.SecretRef())
 	if err != nil {
-		return "", nil, "", err
+		return nil, nil, "", err
 	}
 
-	dsn, err = cfg.BuildDSN(password)
+	dsn, err := cfg.BuildDSN(password)
 	if err != nil {
-		return "", nil, "", err
+		return nil, nil, "", err
 	}
 
-	parser, err := version.DefaultParserManager.New(migration.Spec.Driver, dsn)
+	persistent, err := adapter.DefaultAdapterManager.New(migration.Spec.Driver, dsn)
 	if err != nil {
-		return "", nil, "", err
+		return nil, nil, "", err
 	}
 
-	v, err := parser.GetVersion(ctx)
+	// 版本查询与执行共用同一个 adapter 连接；失败时由这里负责关闭。
+	rawVersion, err := persistent.GetServerVersion(ctx)
 	if err != nil {
-		return "", nil, "", err
+		_ = persistent.Close(ctx)
+		return nil, nil, "", err
 	}
 
-	ok, err := version.DefaultCheckerManager.Check(migration.Spec.Driver, v)
+	// 规范化与范围判断由 Checker 完成（纯逻辑，不碰数据库）。
+	serverVersion, ok, err := version.DefaultCheckerManager.Check(migration.Spec.Driver, rawVersion)
 	if err != nil {
-		return "", nil, "", err
+		_ = persistent.Close(ctx)
+		return nil, nil, "", err
 	}
 	if !ok {
-		return "", nil, "", fmt.Errorf("database version %s does not satisfy %s constraint", v, migration.Spec.Driver)
+		_ = persistent.Close(ctx)
+		return nil, nil, "", fmt.Errorf(
+			"database version %s does not satisfy %s constraint",
+			serverVersion, migration.Spec.Driver,
+		)
 	}
-	return dsn, cfg, v, nil
+	return persistent, cfg, serverVersion, nil
 }
 
 // setCondition 更新一个 condition 并写回 status。

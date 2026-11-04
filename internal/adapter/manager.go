@@ -7,7 +7,7 @@ type Factory func(dsn string) (Persistent, error)
 
 // Manager 按 driver 名分派到对应的 adapter 实现。
 //
-// 跟 ConfigManager / CheckerManager / ParserManager 同一套注册模式：
+// 跟 ConfigManager / CheckerManager 同一套注册模式：
 // 加新数据库 = 实现 Persistent + 注册一行，controller 零改动。
 //
 // ★ 为什么不用「switch driver」代替：

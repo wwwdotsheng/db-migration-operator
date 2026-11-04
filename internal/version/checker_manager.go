@@ -24,18 +24,30 @@ func (cm *CheckerManager) Register(driver string, check Checker, versionRange st
 	return nil
 }
 
-func (cm *CheckerManager) Get(driver string) (Checker, error) {
-	entry, ok := cm.m[driver]
-	if !ok {
-		return nil, fmt.Errorf("driver %s checker not registered", driver)
+// Check 先规范化、再判断，并返回规范化后的版本号。
+//
+// 返回 normalized 是为了让调用方把"数据库实际版本"直接写进错误信息和日志
+// （例如 database version 8.0.36 does not satisfy ...）。
+func (cm *CheckerManager) Check(driver, rawVersion string) (normalized string, ok bool, err error) {
+	entry, exists := cm.m[driver]
+	if !exists {
+		return "", false, fmt.Errorf("driver %s checker not registered", driver)
 	}
-	return entry.Checker, nil
+	normalized = entry.Checker.Normalize(rawVersion)
+	ok, err = entry.Checker.Check(normalized, entry.VersionRange)
+	return normalized, ok, err
 }
 
-func (cm *CheckerManager) Check(driver, version string) (bool, error) {
-	entry, ok := cm.m[driver]
-	if !ok {
-		return false, fmt.Errorf("driver %s checker not registered", driver)
+// DefaultCheckerManager 是包级单例，供 controller 直接使用。
+var DefaultCheckerManager = NewCheckerManager()
+
+func init() {
+	must(DefaultCheckerManager.Register("mysql", NewMysqlChecker(), MysqlVersionRange))
+	must(DefaultCheckerManager.Register("postgres", NewPostgresChecker(), PostgresVersionRange))
+}
+
+func must(err error) {
+	if err != nil {
+		panic(fmt.Sprintf("版本组件注册失败: %v", err))
 	}
-	return entry.Checker.Check(version, entry.VersionRange)
 }

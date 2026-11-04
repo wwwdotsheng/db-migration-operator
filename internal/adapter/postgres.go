@@ -31,6 +31,16 @@ func NewPostgresAdapter(dsn string) (*PostgresAdapter, error) {
 
 var _ Persistent = (*PostgresAdapter)(nil)
 
+// GetServerVersion 返回 PostgreSQL 的原始版本串（SHOW server_version 的输出）。
+// 不做清洗：版本号提取由 internal/version 的 Checker 处理。
+func (a *PostgresAdapter) GetServerVersion(ctx context.Context) (string, error) {
+	var raw string
+	if err := a.db.QueryRowContext(ctx, "SHOW server_version").Scan(&raw); err != nil {
+		return "", fmt.Errorf("query server_version: %w", err)
+	}
+	return raw, nil
+}
+
 func (a *PostgresAdapter) Init(ctx context.Context) error {
 	// ★ serial 而不是 auto_increment
 	//   ★ PG 也不支持列内联 comment（要单独 COMMENT ON），所以这里没写注释
