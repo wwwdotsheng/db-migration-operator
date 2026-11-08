@@ -133,6 +133,9 @@ spec:
               observedGeneration:
                 format: int64
                 type: integer
+              specChecksum:
+                description: SpecChecksum binds this CR to the migration first observed by the controller.
+                type: string
               phase:
                 type: string
             type: object

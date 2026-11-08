@@ -23,7 +23,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/go-logr/logr"
 	adapter "github.com/wwwdotsheng/db-migration-operator/internal/adapter"
 	"github.com/wwwdotsheng/db-migration-operator/internal/resolver"
 	"github.com/wwwdotsheng/db-migration-operator/internal/version"
@@ -33,15 +32,10 @@ import (
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
 
 	dbv1 "github.com/wwwdotsheng/db-migration-operator/api/v1"
 	meta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
-
-var (
-	BeforeVersionNotSatisfied = errors.New("before version not satisfied")
 )
 
 // secretRetryInterval 是「等 Secret 出现」的重试间隔。
@@ -85,273 +79,143 @@ type SchemaMigrationReconciler struct {
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;create;delete
 
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
+// Reconcile 按顺序准备目标库、检查依赖、预演并应用迁移。
 func (r *SchemaMigrationReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	var migration dbv1.SchemaMigration
 	if err := r.Get(ctx, req.NamespacedName, &migration); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	logger := logf.FromContext(ctx)
-	logger = logger.WithValues(
-		"changeType", migration.Spec.ChangeType,
-		"version", migration.Spec.Version,
-	)
+	if reason, message := validateMigration(&migration); reason != "" {
+		if err := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, message); err != nil {
+			return ctrl.Result{}, err
+		}
+		r.Recorder.Event(&migration, corev1.EventTypeWarning, reason, message)
+		return ctrl.Result{}, nil
+	}
 
+	if !migration.DeletionTimestamp.IsZero() || migration.Status.Phase == dbv1.PhaseDone || migration.Status.Phase == dbv1.PhaseFailed {
+		return ctrl.Result{}, nil
+	}
+
+	checksum, err := migrationChecksum(migration.Spec)
+	if err != nil {
+		return ctrl.Result{}, r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error())
+	}
+	if migration.Status.SpecChecksum != "" && migration.Status.SpecChecksum != checksum {
+		return ctrl.Result{}, r.patchStatus(ctx, &migration, dbv1.PhaseFailed, "迁移内容已修改，请使用新的 CR 和版本")
+	}
+	if migration.Status.SpecChecksum == "" {
+		base := migration.DeepCopy()
+		migration.Status.SpecChecksum = checksum
+		if err := r.Status().Patch(ctx, &migration, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+			return ctrl.Result{}, fmt.Errorf("bind migration content: %w", err)
+		}
+		if migration.Status.SpecChecksum != checksum {
+			return ctrl.Result{}, errors.New("SchemaMigration CRD must be upgraded to persist status.specChecksum")
+		}
+	}
+
+	driver, cfg, serverVersion, err := r.prepareDatabase(ctx, &migration)
+	if err != nil {
+		return r.handleDatabasePreparationError(ctx, &migration, err)
+	}
+	defer driver.Close(ctx)
+
+	var result ctrl.Result
+	err = driver.WithMigrationLock(ctx, func(ledger adapter.MigrationLedger) error {
+		var reconcileErr error
+		result, reconcileErr = r.reconcileLocked(ctx, &migration, driver, cfg, serverVersion, checksum, ledger)
+		return reconcileErr
+	})
+	if errors.Is(err, adapter.ErrMigrationLockBusy) {
+		return r.blockMigration(ctx, &migration, "MigrationLockBusy", "同一目标数据库正在处理迁移", migrationRetryInterval)
+	}
+	return result, err
+}
+
+func validateMigration(migration *dbv1.SchemaMigration) (reason, message string) {
 	if !slices.Contains(validChangeType, migration.Spec.ChangeType) {
-		msg := fmt.Sprintf("unknown ChangeType type: %q", migration.Spec.ChangeType)
-		if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, msg); perr != nil {
-			return ctrl.Result{}, perr
-		}
-		r.Recorder.Event(&migration, corev1.EventTypeWarning, "InvalidChangeType", msg)
-		return ctrl.Result{}, nil
+		return "InvalidChangeType", fmt.Sprintf("unknown ChangeType type: %q", migration.Spec.ChangeType)
 	}
-
 	if !slices.Contains(validStatusPhases, migration.Status.Phase) {
-		invalidPhase := migration.Status.Phase
-		msg := fmt.Sprintf(
-			"invalid phase %q, migration terminated, manual intervention required",
-			invalidPhase,
-		)
-		if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, msg); perr != nil {
+		return "InvalidPhaseStatus", fmt.Sprintf("invalid phase %q, migration terminated, manual intervention required", migration.Status.Phase)
+	}
+	return "", ""
+}
+
+func (r *SchemaMigrationReconciler) handleDatabasePreparationError(ctx context.Context, migration *dbv1.SchemaMigration, err error) (ctrl.Result, error) {
+	switch {
+	case errors.Is(err, adapter.ErrNotParseDriverConfig):
+		if perr := r.patchStatus(ctx, migration, dbv1.PhaseFailed, err.Error()); perr != nil {
 			return ctrl.Result{}, perr
 		}
-		r.Recorder.Event(&migration, corev1.EventTypeWarning, "InvalidPhaseStatus", msg)
 		return ctrl.Result{}, nil
-	}
-
-	switch migration.Status.Phase {
-	case dbv1.PhaseInit,
-		dbv1.PhaseApplying,
-		dbv1.PhaseBlocked:
-		persistent, dbCfg, serverVersion, err := r.prepareDatabase(ctx, &migration)
-		if err != nil {
-			switch {
-			case errors.Is(err, adapter.ErrNotParseDriverConfig):
-				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
-					return ctrl.Result{}, perr
-				}
-				return ctrl.Result{}, nil
-			case errors.Is(err, adapter.ErrNotFoundSecret):
-				// ★ Blocked 有三个来源，靠 Event + Condition 的 Reason 区分
-				if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
-					metav1.ConditionTrue, dbv1.ReasonSecretNotFound, err.Error()); cerr != nil {
-					return ctrl.Result{}, cerr
-				}
-				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseBlocked, err.Error()); perr != nil {
-					return ctrl.Result{}, perr
-				}
-				r.Recorder.Eventf(&migration, corev1.EventTypeWarning, dbv1.ReasonSecretNotFound,
-					"等待 Secret 出现，%s 后重试: %v", secretRetryInterval, err)
-				return ctrl.Result{RequeueAfter: secretRetryInterval}, nil
-			case errors.Is(err, adapter.ErrUnauthorizedSecret):
-				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
-					return ctrl.Result{}, perr
-				}
-				return ctrl.Result{}, nil
-			case errors.Is(err, adapter.ErrNoAdapterForDriver):
-				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
-					return ctrl.Result{}, perr
-				}
-				r.Recorder.Event(&migration, corev1.EventTypeWarning, "NoAdapterForDriver", err.Error())
-				return ctrl.Result{}, nil
-			default:
-				// ★ 未知错误也要让用户看得见 —— 否则 CR 的 phase 一直是空的，
-				//   只能翻 Operator 日志才知道为什么。但仍然返回 err，
-				//   因为这类错误（连不上库、版本不匹配…）重试可能恢复。
-				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
-					return ctrl.Result{}, perr
-				}
-				r.Recorder.Event(&migration, corev1.EventTypeWarning, "PrepareDatabaseFailed", err.Error())
-				return ctrl.Result{}, err
-			}
-		}
-		// ★ 连接的生命周期由本轮 Reconcile 持有：所有返回路径都会关闭。
-		//   旧实现从不调用 Close，长期运行会泄漏连接池。
-		defer persistent.Close(ctx)
-
-		// ① ★ 版本依赖检查必须在【预演之前】。
-		//
-		//	否则会并发：t2 声明 beforeVersion=1，但预演先跑了 ——
-		//	那时 t1 还没在真库执行，t2 预演时 dump 到的 schema 里没有 t1 建的表，
-		//	于是 t2 的预演误报失败。实测踩到过。
-		if migration.Spec.BeforeVersion != nil {
-			if berr := r.judgeBlock(ctx, persistent, *migration.Spec.BeforeVersion); berr != nil {
-				if errors.Is(berr, BeforeVersionNotSatisfied) {
-					if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
-						metav1.ConditionTrue, dbv1.ReasonBeforeVersionNotSatisfied, berr.Error()); cerr != nil {
-						return ctrl.Result{}, cerr
-					}
-					if perr := r.patchStatus(ctx, &migration, dbv1.PhaseBlocked, berr.Error()); perr != nil {
-						return ctrl.Result{}, perr
-					}
-					r.Recorder.Eventf(&migration, corev1.EventTypeWarning,
-						dbv1.ReasonBeforeVersionNotSatisfied, "等待前置版本 %d", *migration.Spec.BeforeVersion)
-					return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-				}
-				return ctrl.Result{}, berr
-			}
-		}
-
-		// ② 影子预演
-		// ★ 用 Condition 而不是 Phase 判断「要不要预演」。
-		//   Phase 会被 Blocked 等中间态覆盖，而 Condition 是单调的。
-		if !meta.IsStatusConditionTrue(migration.Status.Conditions, dbv1.ConditionShadowValidated) {
-			done, serr := r.shadowValidate(ctx, &migration, persistent, dbCfg, serverVersion)
-			if serr != nil {
-				if cerr := r.setCondition(ctx, &migration, dbv1.ConditionShadowValidated,
-					metav1.ConditionFalse, dbv1.ReasonValidationFailed, serr.Error()); cerr != nil {
-					return ctrl.Result{}, cerr
-				}
-				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, serr.Error()); perr != nil {
-					return ctrl.Result{}, perr
-				}
-				r.Recorder.Event(&migration, corev1.EventTypeWarning, "ShadowValidationFailed", serr.Error())
-				return ctrl.Result{}, nil
-			}
-			// ★ 声明式：Job 还没跑完就退出，等它变化再回来。
-			//   Owns(&Job{}) 会在 Job 状态变化时唤醒我们。
-			if !done {
-				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-			}
-
-			if cerr := r.setCondition(ctx, &migration, dbv1.ConditionShadowValidated,
-				metav1.ConditionTrue, dbv1.ReasonValidationPassed, "影子预演通过"); cerr != nil {
-				return ctrl.Result{}, cerr
-			}
-			r.Recorder.Event(&migration, corev1.EventTypeNormal, "ShadowValidated", "影子预演通过")
-		}
-
-		// ③ 解除阻塞
-		// ★ 这一段仍然需要：预演只在 Condition 未置位时跑，
-		//   而「曾经预演通过、后来因为等版本被 Blocked」的 CR 不会再走预演。
-		if migration.Status.Phase == dbv1.PhaseBlocked {
-			if perr := r.patchStatus(ctx, &migration, dbv1.PhaseApplying, ""); perr != nil {
-				return ctrl.Result{}, perr
-			}
-			if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
-				metav1.ConditionFalse, dbv1.ReasonMigrationApplied, "阻塞已解除"); cerr != nil {
-				return ctrl.Result{}, cerr
-			}
-			r.Recorder.Event(&migration, corev1.EventTypeNormal, "BlockCleared", "block is cleared")
-		}
-
-		if err := r.applyMigration(ctx, logger, persistent, &migration); err != nil {
-			if errors.Is(err, BeforeVersionNotSatisfied) {
-				if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
-					metav1.ConditionTrue, dbv1.ReasonBeforeVersionNotSatisfied, err.Error()); cerr != nil {
-					return ctrl.Result{}, cerr
-				}
-				if perr := r.patchStatus(ctx, &migration, dbv1.PhaseBlocked, err.Error()); perr != nil {
-					return ctrl.Result{}, perr
-				}
-				r.Recorder.Eventf(&migration, corev1.EventTypeWarning,
-					dbv1.ReasonBeforeVersionNotSatisfied, "执行前发现前置版本不满足: %v", err)
-				return ctrl.Result{RequeueAfter: 10 * time.Second}, nil
-			}
-
-			if perr := r.patchStatus(ctx, &migration, dbv1.PhaseFailed, err.Error()); perr != nil {
-				return ctrl.Result{}, fmt.Errorf("patch status: %w", perr)
-			}
-
-			return ctrl.Result{}, fmt.Errorf("apply migration failed: %w", err)
-		}
-
-		// ★ Blocked 已经不再成立，把 condition 转成 False（而不是删掉）——
-		//   保留历史能看出「曾经因为什么卡过」。
-		if cerr := r.setCondition(ctx, &migration, dbv1.ConditionBlocked,
-			metav1.ConditionFalse, dbv1.ReasonMigrationApplied, "阻塞已解除，迁移完成"); cerr != nil {
+	case errors.Is(err, adapter.ErrNotFoundSecret):
+		if cerr := r.setCondition(ctx, migration, dbv1.ConditionBlocked,
+			metav1.ConditionTrue, dbv1.ReasonSecretNotFound, err.Error()); cerr != nil {
 			return ctrl.Result{}, cerr
 		}
-		if peer := r.patchStatus(ctx, &migration, dbv1.PhaseDone, "migration done"); peer != nil {
-			return ctrl.Result{}, fmt.Errorf("patch status: %w", peer)
+		if perr := r.patchStatus(ctx, migration, dbv1.PhaseBlocked, err.Error()); perr != nil {
+			return ctrl.Result{}, perr
 		}
-		r.Recorder.Event(&migration, corev1.EventTypeNormal, dbv1.ReasonMigrationApplied, "迁移完成")
-
+		r.Recorder.Eventf(migration, corev1.EventTypeWarning, dbv1.ReasonSecretNotFound,
+			"等待 Secret 出现，%s 后重试: %v", secretRetryInterval, err)
+		return ctrl.Result{RequeueAfter: secretRetryInterval}, nil
+	case errors.Is(err, adapter.ErrUnauthorizedSecret):
+		if perr := r.patchStatus(ctx, migration, dbv1.PhaseFailed, err.Error()); perr != nil {
+			return ctrl.Result{}, perr
+		}
 		return ctrl.Result{}, nil
-	case dbv1.PhaseDone,
-		dbv1.PhaseFailed:
+	case errors.Is(err, adapter.ErrNoAdapterForDriver):
+		if perr := r.patchStatus(ctx, migration, dbv1.PhaseFailed, err.Error()); perr != nil {
+			return ctrl.Result{}, perr
+		}
+		r.Recorder.Event(migration, corev1.EventTypeWarning, "NoAdapterForDriver", err.Error())
 		return ctrl.Result{}, nil
+	default:
+		// 保留错误用于诊断。写入 Failed 后，下一轮会按终态结束。
+		if perr := r.patchStatus(ctx, migration, dbv1.PhaseFailed, err.Error()); perr != nil {
+			return ctrl.Result{}, perr
+		}
+		r.Recorder.Event(migration, corev1.EventTypeWarning, "PrepareDatabaseFailed", err.Error())
+		return ctrl.Result{}, err
 	}
-
-	return ctrl.Result{}, nil
 }
 
-func (r *SchemaMigrationReconciler) judgeBlock(ctx context.Context, persistent adapter.Driver, version int) error {
-	status, exists, err := persistent.GetVersionStatus(ctx, version)
+func (r *SchemaMigrationReconciler) reconcileShadow(
+	ctx context.Context, migration *dbv1.SchemaMigration, persistent adapter.Driver,
+	cfg adapter.Config, serverVersion, snapshot string,
+) (bool, ctrl.Result, error) {
+	done, err := r.shadowValidate(ctx, migration, persistent, cfg, serverVersion, snapshot)
+	if err != nil && !isPreviewFailure(err) {
+		return false, ctrl.Result{}, err
+	}
 	if err != nil {
-		return err
-	}
-	if !exists || status != dbv1.PhaseDone {
-		return BeforeVersionNotSatisfied
-	}
-	return nil
-}
-
-func (r *SchemaMigrationReconciler) applyMigration(ctx context.Context, logger logr.Logger, persistent adapter.Driver, migration *dbv1.SchemaMigration) error {
-	if err := persistent.Init(ctx); err != nil {
-		return fmt.Errorf("failed init mysql adapter: %w", err)
-	}
-
-	status, found, err := persistent.GetMigrationStatus(ctx, migration.Spec.Version)
-	if err != nil {
-		return fmt.Errorf("failed get migration status version=%d: %w", migration.Spec.Version, err)
-	}
-
-	switch {
-	case found && status == dbv1.PhaseDone:
-		if perr := r.patchStatus(ctx, migration, dbv1.PhaseDone, "migration done"); perr != nil {
-			return perr
+		if patchErr := r.setCondition(ctx, migration, dbv1.ConditionShadowValidated,
+			metav1.ConditionFalse, dbv1.ReasonValidationFailed, err.Error()); patchErr != nil {
+			return false, ctrl.Result{}, patchErr
 		}
-		return nil
-	case found && status == dbv1.PhaseFailed:
-		if err := persistent.UpdateVersion(ctx, migration.Spec.Version, dbv1.PhaseFailed, dbv1.PhaseApplying); err != nil {
-			if errors.Is(err, adapter.ErrVersionConflict) {
-				return fmt.Errorf("version conflict, will we-read status: %w", err)
-			}
-			return fmt.Errorf("failed update version status: %w", err)
+		if patchErr := r.patchStatus(ctx, migration, dbv1.PhaseFailed, err.Error()); patchErr != nil {
+			return false, ctrl.Result{}, patchErr
 		}
-	case !found:
-		if err := persistent.InsertNewVersion(ctx, migration.Name, migration.Spec.Version, dbv1.PhaseApplying); err != nil {
-			return fmt.Errorf(
-				"failed insert migration version=%d status=%q: %w",
-				migration.Spec.Version, dbv1.PhaseApplying, err,
-			)
+		r.Recorder.Event(migration, corev1.EventTypeWarning, "ShadowValidationFailed", err.Error())
+		return false, ctrl.Result{}, nil
+	}
+	if !done {
+		if err := r.setCondition(ctx, migration, dbv1.ConditionShadowValidated,
+			metav1.ConditionFalse, "ValidationPending", "等待当前账本快照的影子预演"); err != nil {
+			return false, ctrl.Result{}, err
 		}
+		// Job 状态变化会唤醒控制器，定时重排作为兜底。
+		return false, ctrl.Result{RequeueAfter: 10 * time.Second}, nil
 	}
-
-	if migration.Spec.BeforeVersion != nil {
-		status, exists, err := persistent.GetVersionStatus(ctx, *migration.Spec.BeforeVersion)
-		if err != nil {
-			return fmt.Errorf(
-				"failed get before version=%d status: %w",
-				*migration.Spec.BeforeVersion, err,
-			)
-		}
-
-		if (!exists) || (status != dbv1.PhaseDone) {
-			return BeforeVersionNotSatisfied
-		}
+	if err := r.setCondition(ctx, migration, dbv1.ConditionShadowValidated,
+		metav1.ConditionTrue, dbv1.ReasonValidationPassed, "影子预演通过"); err != nil {
+		return false, ctrl.Result{}, err
 	}
-
-	runLines, err := persistent.ExecSql(ctx, migration.Spec.ApplySql)
-	if err != nil {
-		uerr := fmt.Errorf("failed to apply migration: applied sql lines %d err: %w", runLines, err)
-		logger.Error(err, uerr.Error())
-		return err
-	}
-
-	if err := persistent.UpdateVersion(ctx, migration.Spec.Version, dbv1.PhaseApplying, dbv1.PhaseDone); err != nil {
-		return fmt.Errorf("failed to update version: %w", err)
-	}
-
-	err = r.patchStatus(ctx, migration, dbv1.PhaseDone, "migration done")
-	if err != nil {
-		return err
-	}
-
-	return nil
+	r.Recorder.Event(migration, corev1.EventTypeNormal, "ShadowValidated", "影子预演通过")
+	return true, ctrl.Result{}, nil
 }
 
 // prepareDatabase 完成迁移执行前的连接准备：
@@ -414,27 +278,31 @@ func (r *SchemaMigrationReconciler) setCondition(
 	condType string, status metav1.ConditionStatus, reason, message string,
 ) error {
 	base := migration.DeepCopy()
-	meta.SetStatusCondition(&migration.Status.Conditions, metav1.Condition{
+	changed := meta.SetStatusCondition(&migration.Status.Conditions, metav1.Condition{
 		Type:               condType,
 		Status:             status,
 		Reason:             reason,
 		Message:            message,
 		ObservedGeneration: migration.Generation,
 	})
-	if perr := r.Status().Patch(ctx, migration, client.MergeFrom(base)); perr != nil {
+	if !changed {
+		return nil
+	}
+	if perr := r.Status().Patch(ctx, migration, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); perr != nil {
 		return fmt.Errorf("failed to patch condition: %w", perr)
 	}
 	return nil
 }
 
 func (r *SchemaMigrationReconciler) patchStatus(ctx context.Context, migration *dbv1.SchemaMigration, phase dbv1.SchemaMigrationStatusPhase, message string) error {
-	if migration.Status.Phase == phase && migration.Status.Message == message {
+	if migration.Status.Phase == phase && migration.Status.Message == message && migration.Status.ObservedGeneration == migration.Generation {
 		return nil
 	}
 	base := migration.DeepCopy()
 	migration.Status.Phase = phase
+	migration.Status.ObservedGeneration = migration.Generation
 	migration.Status.Message = message
-	if perr := r.Status().Patch(ctx, migration, client.MergeFrom(base)); perr != nil {
+	if perr := r.Status().Patch(ctx, migration, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); perr != nil {
 		return fmt.Errorf("failed to patch status: %w", perr)
 	}
 	return nil

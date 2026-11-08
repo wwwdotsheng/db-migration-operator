@@ -30,14 +30,13 @@ spec:
   beforeVersion: 7      # 7 没 Done 就一直等
 ```
 
-### 放弃回滚，改前滚单语义
+### 用账本区分重复提交与不确定结果
 
-DDL 回滚本身不安全。半执行状态下回滚可能丢数据 —— 比如 `ADD COLUMN` 成功、后面那步失败，回滚要 `DROP COLUMN`，而那一列可能已经有写入。
+同一目标库按版本保存迁移内容的 SHA-256。CR 首次协调时也会记录内容摘要，后续发现内容被修改时停止执行。相同版本、相同内容且已完成时，控制器补写 CR 的 Done。相同版本但内容不同则报冲突。已有账本会按需增加 checksum 列，旧记录保留 NULL。旧 Done 可作为前置版本，直接重提该版本时需要人工核对。
 
-所以整个回滚域被删掉，只保留前滚：
+控制器用数据库会话锁串行执行同一目标库的迁移。影子 Job 运行时释放锁，准备执行真实 SQL 时重新读取账本。如果期间有其他迁移完成，会基于当前账本重新预演。此机制协调使用本 Operator 的迁移，手工或其他工具执行的 DDL 需要另行协调。
 
-- 捕获 MySQL 的 `1060`（duplicate column）/ `1061`（duplicate key）/ `1091`（can't drop）当作「已达成」跳过 —— **重入幂等**，同一个迁移跑第二遍不会报错
-- 失败信息带 `applied N lines`，直接定位到半执行的哪一行
+真实 SQL 开始前先写 Applying，全部成功后再更新账本 Done 和 CR Done。遇到失败或中断时，Applying 记录会阻止继续执行，并将 CR 标为 Blocked，Condition 原因为 MigrationRecoveryRequired。数据库返回重复列、重复索引等错误时，控制器保留错误供人工核对。
 
 ### 凭据不落盘，且不放大 RBAC
 
@@ -45,26 +44,13 @@ DDL 回滚本身不安全。半执行状态下回滚可能丢数据 —— 比�
 
 ---
 
-## 状态机
+## 状态与恢复
 
-```mermaid
-stateDiagram-v2
-    direction LR
-    [*] --> Init
-    Init --> Applying : 首次 reconcile，账本写入 status='applying'
-    Applying --> Applying : 瞬态错误，return err 退避重试（状态不变）
-    Applying --> Done : ApplySql 全部成功
-    Applying --> Done : 幂等命中，账本已是 done，跳过执行
-    Applying --> Blocked : beforeVersion 未达成 / Secret 不存在
-    Blocked --> Applying : 前置版本转为 Done（judgeBlock 通过）
-    Applying --> Failed : driverConfig 解析失败 / Secret 无权限 / ApplySql 失败
-    Done --> [*] : 终态
-    Failed --> [*] : 终态，需人工处理
-```
+CR 的 phase 表示 Kubernetes 侧进度。数据库账本记录真正开始执行的版本。CR 可能停在 Blocked 而账本仍是 Applying。排障时同时检查 CR、影子 Job、账本和真实库结构。
 
-图源在 `docs/`（`.d2` 和 `.mmd` 两份）。
+升级前先停止旧控制器，更新 SchemaMigration CRD，再启动新版本。旧控制器不会遵守新的互斥和 checksum 规则。数据库账号需要创建和升级账本的权限。迁移 SQL 应由可信操作者提交，限定在目标库的普通 DDL。手工 DDL、显式事务控制、切换数据库和修改账本不属于这套执行协议。
 
----
+发现 MigrationRecoveryRequired 时，先停止该目标库的其他变更，保存账本和 schema，核对每条 SQL 的真实效果。若全部已生效，数据库管理员可在维护窗口以版本和原 checksum 为条件人工确认账本 Done。若部分生效，先人工修复到预期结构再确认。只有确认所有 SQL 均未生效、且停掉相关控制器后，才可移除未完成记录并重新提交。不要为旧 Done 记录猜测或补写未核对的 checksum。
 
 ## 快速开始
 
@@ -133,7 +119,7 @@ cmd/main.go                        manager 入口
 api/v1/                            SchemaMigration CRD 类型
 internal/controller/               reconcile 状态机
 internal/version/                  版本串规范化 + 版本范围判断（纯逻辑，不碰数据库）
-internal/adapter/                  driverConfig 解析 / DSN 构建 / 取服务器版本 / 账本读写 / DDL 执行
+internal/adapter/                  driverConfig 解析 / DSN 构建 / 取服务器版本 / 账本读写 / 数据库会话锁 / DDL 执行
 internal/resolver/                 Secret 读取（走 APIReader，绕开缓存）
 ```
 
@@ -155,18 +141,18 @@ DefaultCheckerManager.Register("postgres", NewPostgresChecker(), PostgresVersion
 **为什么 `Blocked` 要轮询而不是 watch？**
 被依赖的版本状态记在数据库账本表里，不在 Kubernetes 里，没法 watch。轮询间隔 10 秒 —— 迁移是低频操作，这个开销可以接受。
 
-**为什么瞬态错误 `return err` 而不是直接置 `Failed`？**
-连接不上、临时锁冲突这类问题会自己消失，交给 controller-runtime 的指数退避重试。只有确定不会自愈的（driverConfig 解析失败、Secret 无权限、SQL 执行失败）才落 `Failed`。
+**哪些情况会重新协调？**
+缺少 Secret、依赖版本未完成、同库锁被占用、影子 Job 未结束时，控制器会等待后再次检查。真实 SQL 开始后的失败需要先核对账本和实际结构。当前连接准备失败会记录 Failed，修正配置后可以重新提交 CR。
 
 ---
 
 ## 已知限制
 
-**`Failed` 是终态，改对 spec 也不会自动重试。** CR 进了 `Failed` 之后 `reconcile` 直接返回，即使把 spec 改对也起不来，得人工清 status。这是有意的（不让自动重试掩盖真问题），但缺一个「条件变化后自动拉回」的机制。
+**`Failed` 是终态，改对 spec 也不会自动重试。** CR 进了 `Failed` 之后 `reconcile` 直接返回，即使把 spec 改对也起不来，修正原因后可新建 CR。这是有意的（不让自动重试掩盖真问题），但缺一个「条件变化后自动拉回」的机制。
 
-**PostgreSQL 尚未完成独立验收。** 配置解析、账本、DDL 执行与影子预演代码均已存在，但只在 MySQL 上做过完整验收；PostgreSQL 链路需要在独立测试库中按 E9 验证，未验证前不宣称可用。
+**PostgreSQL 验证范围。** 已在隔离的 PostgreSQL 16 测试库验证数据库会话互斥、正常迁移，以及影子结构导入失败时不执行真实 DDL。其他版本和主从拓扑尚未纳入本次验收。
 
-**没有版本覆盖冲突检测。** 如果两个 CR 声明了同一个 `version` 但 SQL 不同，现在不会拦。
+**旧账本缺少内容身份。** 旧记录无法自动确认原始 SQL，升级后首次处理前应检查是否有遗留 Applying 或 Failed 记录。
 
 **没做多副本 leader election 的故障演练。** 只在单机 Kind 和自建 K8s 上验证过单副本运行。
 

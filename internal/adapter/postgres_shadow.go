@@ -83,8 +83,8 @@ else
 fi
 
 echo "[3/4] 导入到临时实例"
-# 导入报警不算致命（扩展、权限之类），继续走试跑
-psql -q -d postgres -f /tmp/schema.sql 2>/tmp/import.log || true
+psql -q -v ON_ERROR_STOP=1 -d postgres -f /tmp/schema.sql 2>/tmp/import.log \
+  || fail /tmp/import.log "影子结构导入失败"
 
 echo "[4/4] 逐条试跑"
 echo "$APPLY_SQL_B64" | base64 -d > /tmp/apply.sql

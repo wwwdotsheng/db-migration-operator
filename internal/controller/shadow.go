@@ -86,16 +86,12 @@ func resolveImage(image string) string {
 
 // shadowJobName 生成确定性的 Job 名，便于幂等（重复 reconcile 不会建出多个）。
 //
-// ★ 必须把 generation 也算进去：
-//
-//	只按 namespace/name 算的话，改了 CR 的 applySql 之后 Job 名不变 ——
-//	而旧 Job 还在（TTL 10 分钟），reconcile 会看到它的 Succeeded > 0，
-//	误判「预演通过」，实际用的是【过期的预演结果】。
-//	generation 在 spec 变更时会 +1，所以名字跟着变，旧 Job 被自然淘汰。
-func shadowJobName(migration *dbv1.SchemaMigration) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%d",
-		migration.Namespace, migration.Name, migration.Generation)))
-	return "shadow-" + hex.EncodeToString(sum[:6])
+// Include UID, spec generation, and ledger snapshot so a stale Job cannot
+// validate a recreated CR, an edited spec, or a schema predating another migration.
+func shadowJobName(migration *dbv1.SchemaMigration, snapshot string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s/%s/%s/%d/%s",
+		migration.Namespace, migration.Name, migration.UID, migration.Generation, snapshot)))
+	return "shadow-" + hex.EncodeToString(sum[:12])
 }
 
 // shadowValidate 用 Job 在临时实例上预演一次迁移。
@@ -104,7 +100,7 @@ func shadowJobName(migration *dbv1.SchemaMigration) string {
 // 等 Job 状态变化（Owns 会唤醒）或者超时后重新入队。
 func (r *SchemaMigrationReconciler) shadowValidate(
 	ctx context.Context, migration *dbv1.SchemaMigration,
-	persistent adapter.Driver, cfg adapter.Config, serverVersion string,
+	persistent adapter.Driver, cfg adapter.Config, serverVersion, snapshot string,
 ) (bool, error) {
 	// ★ 能力由 driver 自己声明 —— controller 里不出现任何 driver 名字。
 	//   实现了 ShadowValidator = 支持预演；没实现就明确拒绝（不静默跳过）。
@@ -119,7 +115,7 @@ func (r *SchemaMigrationReconciler) shadowValidate(
 		return false, &ValidationError{Reason: fmt.Sprintf("组装预演容器规格失败: %v", err)}
 	}
 
-	name := shadowJobName(migration)
+	name := shadowJobName(migration, snapshot)
 	key := client.ObjectKey{Namespace: migration.Namespace, Name: name}
 
 	var job batchv1.Job
@@ -132,6 +128,10 @@ func (r *SchemaMigrationReconciler) shadowValidate(
 	}
 	if err != nil {
 		return false, err
+	}
+
+	if !metav1.IsControlledBy(&job, migration) {
+		return false, &ValidationError{Reason: "影子 Job 的所有者与当前迁移不一致"}
 	}
 
 	switch {

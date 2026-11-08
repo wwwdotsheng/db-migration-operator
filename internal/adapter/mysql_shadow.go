@@ -92,8 +92,8 @@ mysqldump --defaults-extra-file=/tmp/my.cnf \
 echo "[3/4] 导入到临时实例"
 mysql --socket="$SOCK" -u root -e "CREATE DATABASE $SHADOW_DB" 2>/tmp/createdb.log \
   || fail /tmp/createdb.log "建影子库失败"
-# 导入报警不算致命（DEFINER、权限、GTID 之类），继续走试跑
-mysql --socket="$SOCK" -u root "$SHADOW_DB" < /tmp/schema.sql 2>/tmp/import.log || true
+mysql --socket="$SOCK" -u root "$SHADOW_DB" < /tmp/schema.sql 2>/tmp/import.log \
+  || fail /tmp/import.log "影子结构导入失败"
 
 echo "[4/4] 逐条试跑"
 echo "$APPLY_SQL_B64" | base64 -d > /tmp/apply.sql
