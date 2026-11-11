@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strings"
 
 	_ "github.com/lib/pq"
 )
@@ -20,10 +22,24 @@ func NewPostgresDriver(dsn string) (*PostgresDriver, error) {
 
 var _ Driver = (*PostgresDriver)(nil)
 
-func (a *PostgresDriver) GetServerVersion(ctx context.Context) (string, error) {
+const postgresVersionRange = ">= 13, < 18"
+
+var postgresVersionPattern = regexp.MustCompile(`^\d+\.\d+(\.\d+)?\b`)
+
+func (a *PostgresDriver) CheckVersion(ctx context.Context) (VersionInfo, error) {
 	var raw string
-	err := a.db.QueryRowContext(ctx, "SHOW server_version").Scan(&raw)
-	return raw, err
+	if err := a.db.QueryRowContext(ctx, "SHOW server_version").Scan(&raw); err != nil {
+		return VersionInfo{}, fmt.Errorf("%w: PostgreSQL: %w", ErrServerVersionQuery, err)
+	}
+	return VersionInfo{Raw: raw}, checkPostgresVersion(raw)
+}
+
+func postgresVersionNumber(raw string) string {
+	return postgresVersionPattern.FindString(strings.TrimPrefix(raw, "PostgreSQL "))
+}
+
+func checkPostgresVersion(raw string) error {
+	return checkVersionRange(raw, postgresVersionNumber(raw), postgresVersionRange)
 }
 
 func (a *PostgresDriver) WithMigrationLock(ctx context.Context, run func(MigrationLedger) error) error {

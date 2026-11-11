@@ -20,7 +20,7 @@ var _ ShadowValidator = (*PostgresDriver)(nil)
 //
 // 返回【相对镜像名】，仓库前缀由部署环境在 controller 侧拼。
 func postgresShadowImage(serverVersion string) string {
-	major := serverVersion
+	major := postgresVersionNumber(serverVersion)
 	if i := strings.IndexByte(major, '.'); i > 0 {
 		major = major[:i]
 	}

@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
+	"strings"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -20,10 +22,23 @@ func NewMysqlDriver(dsn string) (*MysqlDriver, error) {
 
 var _ Driver = (*MysqlDriver)(nil)
 
-func (a *MysqlDriver) GetServerVersion(ctx context.Context) (string, error) {
+const mysqlVersionRange = ">= 5.7, < 9"
+
+var mysqlVersionPattern = regexp.MustCompile(`^\d+\.\d+(\.\d+)?\b`)
+
+func (a *MysqlDriver) CheckVersion(ctx context.Context) (VersionInfo, error) {
 	var raw string
-	err := a.db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&raw)
-	return raw, err
+	if err := a.db.QueryRowContext(ctx, "SELECT VERSION()").Scan(&raw); err != nil {
+		return VersionInfo{}, fmt.Errorf("%w: MySQL: %w", ErrServerVersionQuery, err)
+	}
+	return VersionInfo{Raw: raw}, checkMysqlVersion(raw)
+}
+
+func checkMysqlVersion(raw string) error {
+	if strings.Contains(strings.ToLower(raw), "mariadb") {
+		return fmt.Errorf("%w: MySQL driver cannot use MariaDB server %q", ErrIncompatibleServerVersion, raw)
+	}
+	return checkVersionRange(raw, mysqlVersionPattern.FindString(raw), mysqlVersionRange)
 }
 
 func (a *MysqlDriver) WithMigrationLock(ctx context.Context, run func(MigrationLedger) error) error {

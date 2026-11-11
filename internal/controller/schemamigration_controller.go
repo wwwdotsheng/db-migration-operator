@@ -25,7 +25,6 @@ import (
 
 	adapter "github.com/wwwdotsheng/db-migration-operator/internal/adapter"
 	"github.com/wwwdotsheng/db-migration-operator/internal/resolver"
-	"github.com/wwwdotsheng/db-migration-operator/internal/version"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -247,27 +246,12 @@ func (r *SchemaMigrationReconciler) prepareDatabase(
 		return nil, nil, "", err
 	}
 
-	// 版本查询与执行共用同一个 adapter 连接；失败时由这里负责关闭。
-	rawVersion, err := persistent.GetServerVersion(ctx)
+	versionInfo, err := persistent.CheckVersion(ctx)
 	if err != nil {
 		_ = persistent.Close(ctx)
-		return nil, nil, "", err
+		return nil, nil, "", fmt.Errorf("driver %q: %w", migration.Spec.Driver, err)
 	}
-
-	// 规范化与范围判断由 Checker 完成（纯逻辑，不碰数据库）。
-	serverVersion, ok, err := version.DefaultCheckerManager.Check(migration.Spec.Driver, rawVersion)
-	if err != nil {
-		_ = persistent.Close(ctx)
-		return nil, nil, "", err
-	}
-	if !ok {
-		_ = persistent.Close(ctx)
-		return nil, nil, "", fmt.Errorf(
-			"database version %s does not satisfy %s constraint",
-			serverVersion, migration.Spec.Driver,
-		)
-	}
-	return persistent, cfg, serverVersion, nil
+	return persistent, cfg, versionInfo.Raw, nil
 }
 
 // setCondition 更新一个 condition 并写回 status。
