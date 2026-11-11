@@ -64,25 +64,34 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell "$(ENVTEST)" use $(ENVTEST_K8S_VERSION) --bin-dir "$(LOCALBIN)" -p path)" go test $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
 KIND_CLUSTER ?= db-migration-operator-test-e2e
+KIND_NODE_IMAGE ?=
+E2E_KUBECONFIG ?= $(LOCALBIN)/e2e.kubeconfig
 
 .PHONY: setup-test-e2e
+setup-test-e2e: export KUBECONFIG = $(E2E_KUBECONFIG)
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 	@command -v $(KIND) >/dev/null 2>&1 || { \
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
-	esac
+	@if $(KIND) get clusters | grep -Fxq "$(KIND_CLUSTER)"; then \
+		echo "Using Kind cluster '$(KIND_CLUSTER)'."; \
+		$(KIND) export kubeconfig --name $(KIND_CLUSTER); \
+	else \
+		$(KIND) create cluster --name $(KIND_CLUSTER) $(if $(KIND_NODE_IMAGE),--image $(KIND_NODE_IMAGE)); \
+	fi
 
 .PHONY: test-e2e
+test-e2e: export KUBECONFIG = $(E2E_KUBECONFIG)
 test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
 	KIND=$(KIND) KIND_CLUSTER=$(KIND_CLUSTER) go test -tags=e2e ./test/e2e/ -v -ginkgo.v
 	$(MAKE) cleanup-test-e2e
+
+.PHONY: docker-build-e2e
+docker-build-e2e: ## Build a static manager using the host Go toolchain for Kind tests.
+	mkdir -p "$(LOCALBIN)/e2e-image"
+	CGO_ENABLED=0 GOOS=linux GOARCH=$$(docker version --format '{{.Server.Arch}}') go build -o "$(LOCALBIN)/e2e-image/manager" ./cmd
+	docker build -t $(IMG) -f test/e2e/Dockerfile "$(LOCALBIN)/e2e-image"
 
 .PHONY: cleanup-test-e2e
 cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests

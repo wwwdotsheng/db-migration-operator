@@ -72,6 +72,16 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", managerImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("using images preloaded into Kind for shadow Jobs")
+		cmd = exec.Command("kubectl", "set", "env", "deployment/db-migration-operator-controller-manager",
+			"-n", namespace, "IMAGE_REPOSITORY=")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred())
+		cmd = exec.Command("kubectl", "rollout", "status", "deployment/db-migration-operator-controller-manager",
+			"-n", namespace, "--timeout=180s")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Controller did not become ready")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
@@ -141,6 +151,8 @@ var _ = Describe("Manager", Ordered, func() {
 	SetDefaultEventuallyPollingInterval(time.Second)
 
 	Context("Manager", func() {
+		It("should apply a PostgreSQL migration after shadow validation", postgresMigrationSucceeds)
+
 		It("should run successfully", func() {
 			By("validating that the controller-manager pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
@@ -217,13 +229,13 @@ var _ = Describe("Manager", Ordered, func() {
 			By("creating the curl-metrics pod to access the metrics endpoint")
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
-				"--image=curlimages/curl:latest",
+				"--image=curlimages/curl:8.12.1",
 				"--overrides",
 				fmt.Sprintf(`{
 					"spec": {
 						"containers": [{
 							"name": "curl",
-							"image": "curlimages/curl:latest",
+							"image": "curlimages/curl:8.12.1",
 							"command": ["/bin/sh", "-c"],
 							"args": [
 								"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"

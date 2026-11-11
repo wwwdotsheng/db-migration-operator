@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -51,14 +52,32 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
+	cluster := os.Getenv("KIND_CLUSTER")
+	if cluster == "" {
+		cluster = "kind"
+	}
+	out, err := utils.Run(exec.Command("kubectl", "config", "current-context"))
+	Expect(err).NotTo(HaveOccurred())
+	Expect(strings.TrimSpace(out)).To(Equal("kind-"+cluster),
+		"E2E installs and removes CRDs; select the dedicated Kind test cluster")
+
 	By("building the manager image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", managerImage))
-	_, err := utils.Run(cmd)
+	cmd := exec.Command("make", "docker-build-e2e", fmt.Sprintf("IMG=%s", managerImage))
+	_, err = utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager image")
 
 	By("loading the manager image on Kind")
 	err = utils.LoadImageToKindClusterWithName(managerImage)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to load the manager image into Kind")
+
+	for _, image := range []string{"postgres:16-alpine", "curlimages/curl:8.12.1"} {
+		By("loading test image " + image)
+		if _, err := utils.Run(exec.Command("docker", "image", "inspect", "--format", "{{.Id}}", image)); err != nil {
+			_, err = utils.Run(exec.Command("docker", "pull", image))
+			Expect(err).NotTo(HaveOccurred())
+		}
+		Expect(utils.LoadImageToKindClusterWithName(image)).To(Succeed())
+	}
 
 	configureKubectlKubeRC()
 	setupCertManager()

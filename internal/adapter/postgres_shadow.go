@@ -73,12 +73,14 @@ umask 077
 echo "$REAL_HOST:$REAL_PORT:$REAL_DB:$REAL_USER:$REAL_PASSWORD" > /tmp/.pgpass
 export PGPASSFILE=/tmp/.pgpass
 REAL_DSN="postgresql://$REAL_USER@$REAL_HOST:$REAL_PORT/$REAL_DB?sslmode=disable"
+# --clean emits DROP statements into the dump for replay in the temporary instance.
+# The freshly initialized instance already contains the public schema.
 # ★ REAL_SCHEMA 为空 = 导出全部非系统 schema（默认，避免漏 schema）
 if [ -n "$REAL_SCHEMA" ]; then
-  pg_dump -n "$REAL_SCHEMA" --schema-only --no-owner --no-privileges "$REAL_DSN" > /tmp/schema.sql 2>/tmp/dump.log \
+  pg_dump -n "$REAL_SCHEMA" --clean --if-exists --schema-only --no-owner --no-privileges "$REAL_DSN" > /tmp/schema.sql 2>/tmp/dump.log \
     || fail /tmp/dump.log "pg_dump 失败"
 else
-  pg_dump --schema-only --no-owner --no-privileges "$REAL_DSN" > /tmp/schema.sql 2>/tmp/dump.log \
+  pg_dump --clean --if-exists --schema-only --no-owner --no-privileges "$REAL_DSN" > /tmp/schema.sql 2>/tmp/dump.log \
     || fail /tmp/dump.log "pg_dump 失败"
 fi
 
