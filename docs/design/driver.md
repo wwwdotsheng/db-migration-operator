@@ -58,4 +58,4 @@ type VersionInfo struct {
 
 数据库账本的 `Applying` 必须在执行 DDL 前落盘。若重构后仍需在执行期间更新 CR 的 `Applying`，由 Controller 单独处理展示时机。故障恢复以数据库账本为依据。
 
-在线 Contract 涉及独立的执行 Job 和切表结果核对，后续单独设计。
+在线 DDL 涉及独立的执行 Job 和切表结果核对，首版范围与验收见[在线 DDL 需求](../requirements/online-ddl.md)。
